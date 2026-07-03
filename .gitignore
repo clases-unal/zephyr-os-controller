@@ -1,0 +1,49 @@
+# =========================================================================
+# .gitignore — Sistema de Control Térmico de Alta Disponibilidad
+# Va en la RAÍZ del repositorio (project-root/.gitignore), no dentro de
+# firmware/stm32/. Git aplica las reglas a todo el árbol desde ahí hacia
+# abajo, así que un solo archivo cubre firmware/stm32/, firmware/esp32/ y
+# cualquier otra carpeta futura sin necesidad de duplicarlo.
+# =========================================================================
+
+# --- PlatformIO ---
+# .pio/ contiene el build compilado, librerías descargadas y cachés.
+# Se regenera por completo con `pio run`; nunca debe versionarse.
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# --- Entornos virtuales de Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# --- Editor / IDE ---
+# .vscode/ se ignora completo por defecto. Si en algún momento quieres
+# compartir configuración específica del proyecto (por ejemplo tareas de
+# build o extensiones recomendadas), se puede "despermitir" archivo por
+# archivo con un patrón !nombre, ver nota de uso más abajo.
+.vscode/
+.idea/
+*.code-workspace
+
+# --- Artefactos de compilación (por si Zephyr genera build/ fuera de .pio/) ---
+build/
+zephyr/build/
+compile_commands.json
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.d
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs y temporales ---
+*.log
+*.tmp
