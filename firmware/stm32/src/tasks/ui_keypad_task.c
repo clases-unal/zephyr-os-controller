@@ -46,6 +46,14 @@ static const struct device *display_dev = DEVICE_DT_GET(DT_NODELABEL(ssd1306));
 static bool display_ok  = false;
 static bool keypad_ok   = false;
 
+/* Bandera para solicitar el cambio a modo edición desde otro hilo */
+volatile bool flag_request_config = false;
+
+void ui_request_config_mode(void)
+{
+	flag_request_config = true;
+}
+
 /* ── Modos de la UI ──────────────────────────────────────────────────────── */
 typedef enum {
 	UI_MODE_MONITOR,        /* Vista principal: temperatura, umbral, duty */
@@ -79,6 +87,15 @@ static bool display_init(void)
 		LOG_ERR("cfb_framebuffer_init fallo — revisar CONFIG_HEAP_MEM_POOL_SIZE en prj.conf");
 		return false;
 	}
+
+	/* --- AÑADIR ESTAS TRES LÍNEAS --- */
+	if (cfb_framebuffer_set_font(display_dev, 0) != 0) {
+		LOG_ERR("No se pudo cargar la fuente del OLED");
+		return false;
+	}
+	/* -------------------------------- */
+
+	cfb_framebuffer_clear(display_dev, true);
 
 	cfb_framebuffer_clear(display_dev, true);
 	cfb_framebuffer_invert(display_dev);
@@ -269,6 +286,8 @@ static void ui_keypad_task_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
+	k_msleep(200); /* Esperar a que main() inicialice los estados globales */
+
 	LOG_INF("ui_keypad_task thread started");
 
 	display_ok = display_init();
@@ -284,40 +303,59 @@ static void ui_keypad_task_thread(void *p1, void *p2, void *p3)
 	uint32_t  timeout = TIMEOUT_TICKS;
 
 	while (1) {
+		// --- AÑADIR ESTE BLOQUE ---
+		if (flag_request_config) {
+			flag_request_config = false;
+			if (display_ok) {
+				mode = UI_MODE_EDIT_LOW; // O la constante que uses para editar
+				timeout = TIMEOUT_TICKS;
+			}
+		}
+		// 1. Pintar la pantalla ANTES de esperar
+		if (display_ok) {
+			if (mode == UI_MODE_MONITOR) {
+				render_monitor(); // <-- Usamos tu función original
+			} else {
+				// Buscar el valor del umbral actual para mostrarlo en la edición
+				ConfigState cfg;
+				config_state_get(&cfg);
+				float current_val = 0.0f;
+				
+				if (mode == UI_MODE_EDIT_LOW) current_val = cfg.threshold_low;
+				else if (mode == UI_MODE_EDIT_MEDIUM) current_val = cfg.threshold_medium;
+				else if (mode == UI_MODE_EDIT_HIGH) current_val = cfg.threshold_high;
+				else if (mode == UI_MODE_EDIT_CRITICAL) current_val = cfg.threshold_critical;
+
+				render_edit(mode, current_val); // <-- Usamos tu función original
+			}
+		}
+
+		// 2. Leer el teclado
 		char key;
 		bool key_pressed = keypad_ok && matrix_keypad_scan(&key);
 
 		if (key_pressed) {
-			timeout = TIMEOUT_TICKS;  /* Reiniciar timeout */
+			timeout = TIMEOUT_TICKS;
 
 			if (mode == UI_MODE_MONITOR) {
-				mode = process_key_monitor(key);
+				// Usamos tu función que ya procesa la 'A' para saltar a edición
+				mode = process_key_monitor(key); 
 			} else {
+				// Modo edición normal
 				mode = process_key_edit(key, mode);
 			}
 		} else if (mode != UI_MODE_MONITOR) {
-			/* Contar timeout solo cuando se está en modo edición */
+			// 3. Cuenta el timeout solo si estás editando
 			if (timeout > 0) {
 				timeout--;
 			} else {
-				LOG_INF("Timeout de UI — volviendo a monitor");
+				LOG_INF("Timeout de edicion alcanzado. Volviendo a Monitoreo.");
 				mode = UI_MODE_MONITOR;
 			}
 		}
 
-		/* Renderizar */
-		if (mode == UI_MODE_MONITOR) {
-			render_monitor();
-		} else {
-			ConfigState cfg;
-			config_state_get(&cfg);
-			float *val = field_for_mode(mode, &cfg);
-			render_edit(mode, val ? *val : 0.0f);
-		}
-
-		k_sleep(K_MSEC(SCAN_PERIOD_MS));
-	}
-}
+		k_msleep(20);
+	}}
 
 K_THREAD_DEFINE(ui_keypad_tid, STACK_SIZE, ui_keypad_task_thread,
 		 NULL, NULL, NULL, THREAD_PRIORITY, 0, 0);

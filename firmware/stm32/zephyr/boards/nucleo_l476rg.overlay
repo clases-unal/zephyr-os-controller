@@ -60,7 +60,7 @@
 	shutdown_btn {
 		compatible = "gpio-keys";
 		shutdown_button: shutdown_0 {
-			gpios = <&gpioc 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			gpios = <&gpioc 13 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 			label = "Shutdown button";
 		};
 	};

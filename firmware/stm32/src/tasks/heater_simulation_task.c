@@ -2,24 +2,24 @@
  * heater_simulation_task.c — Hilo que simula una fuente de calor externa.
  *
  * Qué hace:
- * - Activa y desactiva un pin de GPIO con un patrón periódico para simular una
- *   resistencia de calentamiento.
+ * - Activa y desactiva un pin de GPIO para simular una
+ * resistencia de calentamiento.
  * - Solo emite calor cuando system_enabled está activo Y la autorización no fue
- *   revocada externamente (ver heater_simulation_set_authorized()).
+ * revocada externamente (ver heater_simulation_set_authorized()).
  *
  * Cómo lo hace:
- * - Usa un pulso periódico con tiempo HIGH y tiempo LOW fijos.
+ * - Mantiene el pin activo de forma FIJA mientras tenga permiso.
  * - El hilo consulta SystemState para verificar si el sistema está habilitado.
  * - Consulta también una bandera interna "authorized" que otro módulo
- *   (cooling_manager, ante CRITICAL por sobretemperatura sostenida) puede
- *   bajar para forzar el corte del keep-alive sin tener acceso directo al GPIO.
+ * (cooling_manager, ante CRITICAL por sobretemperatura sostenida) puede
+ * bajar para forzar el corte del keep-alive sin tener acceso directo al GPIO.
  * - Si cualquiera de las dos condiciones falla, mantiene el GPIO en estado inactivo.
  *
  * Qué recibe / qué entrega:
  * - Recibe el estado de habilitación del sistema desde SystemState y la
- *   autorización externa desde heater_simulation_set_authorized().
+ * autorización externa desde heater_simulation_set_authorized().
  * - Entrega una señal de calor simulada al entorno físico (GPIO) y, vía la
- *   temperatura del NTC, afecta al comportamiento del ventilador.
+ * temperatura del NTC, afecta al comportamiento del ventilador.
  */
 
 #include <zephyr/kernel.h>
@@ -34,17 +34,12 @@ LOG_MODULE_REGISTER(heater_simulation_task, LOG_LEVEL_INF);
 #define STACK_SIZE       1024
 #define THREAD_PRIORITY  6       /* Baja prioridad */
 
-#define PULSE_PERIOD_MS  500     /* Período del pulso de keep-alive */
-#define PULSE_ON_MS      200     /* Duración del pulso HIGH (duty ~40%) */
-
 static const struct gpio_dt_spec heater =
 	GPIO_DT_SPEC_GET(DT_NODELABEL(heater_pin), gpios);
 
 /* Volátil: se escribe desde el hilo de cooling_manager y se lee desde este
  * hilo. No necesita mutex propio porque es un bool de una sola escritura por
- * evento (revocar/restaurar), no una estructura compuesta — una lectura
- * "atrasada" en el peor caso retrasa el corte por un ciclo de PULSE_PERIOD_MS,
- * lo cual es aceptable para esta señal. */
+ * evento (revocar/restaurar), no una estructura compuesta. */
 static volatile bool authorized = true;
 
 void heater_simulation_set_authorized(bool new_authorized)
@@ -78,17 +73,19 @@ static void heater_simulation_task_thread(void *p1, void *p2, void *p3)
 		SystemState sys;
 		system_state_get(&sys);
 
+		/* may_run es true si no hay alarma permanente y si la temperatura 
+		 * no ha revocado la autorización */
 		bool may_run = sys.system_enabled && authorized;
 
 		if (may_run) {
 			gpio_pin_set_dt(&heater, 1);
-			k_sleep(K_MSEC(PULSE_ON_MS));
-			gpio_pin_set_dt(&heater, 0);
-			k_sleep(K_MSEC(PULSE_PERIOD_MS - PULSE_ON_MS));
 		} else {
 			gpio_pin_set_dt(&heater, 0);
-			k_sleep(K_MSEC(PULSE_PERIOD_MS));
 		}
+		
+		/* Espera corta para liberar la CPU, ya no controla un pulso
+		 * sino la frecuencia de actualización del pin */
+		k_sleep(K_MSEC(100)); 
 	}
 }
 
