@@ -227,52 +227,99 @@ static void render_edit(ui_mode_t mode, float current_val)
 }
 
 /* ── Helpers de acceso y teclado ─────────────────────────────────────────── */
-static float *field_for_mode(ui_mode_t mode, ConfigState *cfg)
-{
-	switch (mode) {
-	case UI_MODE_EDIT_LOW:      return &cfg->threshold_low;
-	case UI_MODE_EDIT_MEDIUM:   return &cfg->threshold_medium;
-	case UI_MODE_EDIT_HIGH:     return &cfg->threshold_high;
-	case UI_MODE_EDIT_CRITICAL: return &cfg->threshold_critical;
-	default:                    return NULL;
-	}
-}
 
-static ui_mode_t process_key_monitor(char key)
-{
-	/* Ya no procesamos teclas '1', '2', '3' o '4' para entrar a configuración. 
-	 * El acceso es exclusivo mediante pulsación media del botón PC13. */
-	return UI_MODE_MONITOR;
-}
-
+/* Procesa la tecla presionada y devuelve el nuevo modo de la interfaz */
 static ui_mode_t process_key_edit(char key, ui_mode_t mode)
 {
-	ConfigState cfg;
-	config_state_get(&cfg);
-	float *target = field_for_mode(mode, &cfg);
-	if (!target) {
-		return UI_MODE_MONITOR;
-	}
+    /* 1. Obtener el valor actual que vemos en pantalla */
+    float current_val = 0.0f;
+    ConfigState cfg;
+    config_state_get(&cfg); /* Estado real en RAM */
 
-	switch (key) {
-	case 'A': *target += 1.0f; break;
-	case 'B': *target -= 1.0f; break;
-	case 'D':
-		if (cfg.threshold_low < cfg.threshold_medium &&
-		    cfg.threshold_medium < cfg.threshold_high &&
-		    cfg.threshold_high < cfg.threshold_critical) {
-			config_state_set_thresholds(cfg.threshold_low, cfg.threshold_medium,
-						     cfg.threshold_high, cfg.threshold_critical);
-			return UI_MODE_MONITOR;
-		} else {
-			return mode; /* Orden inválido: rechazado, se queda en edición */
-		}
-	case '*':
-		return UI_MODE_MONITOR;
-	default:
-		break;
-	}
-	return mode;
+    /* Priorizar lo que el usuario está editando temporalmente en el búfer (file-scope) */
+    if (edit_idx > 0) {
+        current_val = atof(edit_buf);
+    } else {
+        /* Si no hay edición en curso, mostrar valor real de RAM */
+        if (mode == UI_MODE_EDIT_LOW) current_val = cfg.threshold_low;
+        else if (mode == UI_MODE_EDIT_MEDIUM) current_val = cfg.threshold_medium;
+        else if (mode == UI_MODE_EDIT_HIGH) current_val = cfg.threshold_high;
+        else if (mode == UI_MODE_EDIT_CRITICAL) current_val = cfg.threshold_critical;
+    }
+
+    /* 2. Procesar la acción de la tecla */
+    
+    /* Escritura manual con números */
+    if ((key >= '0' && key <= '9') || key == '.') {
+        if (edit_idx < sizeof(edit_buf) - 1) {
+            edit_buf[edit_idx++] = key;
+            edit_buf[edit_idx] = '\0';
+        }
+    } 
+    /* A: Aumentar 5 grados */
+    else if (key == 'A') {
+        current_val += 5.0f;
+        snprintf(edit_buf, sizeof(edit_buf), "%.1f", (double)current_val);
+        edit_idx = strlen(edit_buf);
+    } 
+    /* B: Disminuir 5 grados */
+    else if (key == 'B') {
+        current_val -= 5.0f;
+        snprintf(edit_buf, sizeof(edit_buf), "%.1f", (double)current_val);
+        edit_idx = strlen(edit_buf);
+    } 
+    /* C: Confirmar y Guardar (Validando lógica térmica) */
+    else if (key == 'C') {
+        if (mode == UI_MODE_EDIT_LOW) cfg.threshold_low = current_val;
+        else if (mode == UI_MODE_EDIT_MEDIUM) cfg.threshold_medium = current_val;
+        else if (mode == UI_MODE_EDIT_HIGH) cfg.threshold_high = current_val;
+        else if (mode == UI_MODE_EDIT_CRITICAL) cfg.threshold_critical = current_val;
+
+        /* Regla estricta: L < M < H < C */
+        if (cfg.threshold_low < cfg.threshold_medium && 
+            cfg.threshold_medium < cfg.threshold_high && 
+            cfg.threshold_high < cfg.threshold_critical) {
+            
+            /* Guardar permanentemente en RAM */
+            config_state_set_thresholds(cfg.threshold_low, cfg.threshold_medium, 
+                                        cfg.threshold_high, cfg.threshold_critical);
+
+            ui_display_clear();
+            display_print("GUARDADO OK", 0, 16);
+            display_flush();
+            k_msleep(1000);
+            
+            /* Limpiar búfer para leer el nuevo valor confirmado */
+            edit_idx = 0;
+            memset(edit_buf, 0, sizeof(edit_buf));
+        } else {
+            /* Rechazar cambios por romper la escala de temperaturas */
+            ui_display_clear();
+            display_print("ERROR DE ORDEN", 0, 16);
+            display_print("L< M< H< C", 0, 32);
+            display_flush();
+            k_msleep(2000);
+        }
+    } 
+    /* #: Pasar al siguiente menú de forma cíclica */
+    else if (key == '#') {
+        edit_idx = 0;
+        memset(edit_buf, 0, sizeof(edit_buf));
+
+        if (mode == UI_MODE_EDIT_LOW) return UI_MODE_EDIT_MEDIUM;
+        else if (mode == UI_MODE_EDIT_MEDIUM) return UI_MODE_EDIT_HIGH;
+        else if (mode == UI_MODE_EDIT_HIGH) return UI_MODE_EDIT_CRITICAL;
+        else if (mode == UI_MODE_EDIT_CRITICAL) return UI_MODE_EDIT_LOW;
+    } 
+    /* *: Salir al monitor principal */
+    else if (key == '*') {
+        edit_idx = 0;
+        memset(edit_buf, 0, sizeof(edit_buf));
+        return UI_MODE_MONITOR; 
+    }
+    
+    /* Si no se cambió de pantalla, nos mantenemos en el modo actual */
+    return mode;
 }
 
 /* ── Hilo principal ──────────────────────────────────────────────────────── */
@@ -375,117 +422,29 @@ static void ui_keypad_task_thread(void *p1, void *p2, void *p3)
 		}
 
 		/* 2. Leer el teclado */
-		static char last_key = '\0'; /* Memoria de la tecla presionada (Antirrebote) */
-		char key;
-		bool key_pressed = keypad_ok && matrix_keypad_scan(&key);
+        static char last_key = '\0'; /* Memoria de la tecla presionada (Antirrebote) */
+        char key;
+        bool key_pressed = keypad_ok && matrix_keypad_scan(&key);
 
-		if (key_pressed) {
-			timeout = TIMEOUT_TICKS; /* Reiniciar inactividad con cualquier tecla */
-			
-			/* --- LÓGICA ANTIRREBOTE (EDGE DETECTION) --- */
-			/* Solo procesar si la tecla es diferente a la del ciclo anterior */
-			if (key != last_key) {
-				last_key = key; /* Guardar estado de la tecla para no repetir */
+        if (key_pressed) {
+            timeout = TIMEOUT_TICKS; /* Reiniciar inactividad con cualquier tecla */
+            
+            /* Lógica Antirrebote (Edge detection) */
+            if (key != last_key) {
+                last_key = key; 
 
-				if (mode != UI_MODE_MONITOR && mode != UI_MODE_SHUTDOWN) {
-					
-					/* 2.1 Obtener el valor actual que vemos en pantalla */
-					float current_val = 0.0f;
-					ConfigState cfg;
-					config_state_get(&cfg); /* Estado real en RAM */
+                /* Si estamos editando y no apagando, procesamos la tecla */
+                if (mode != UI_MODE_MONITOR && mode != UI_MODE_SHUTDOWN) {
+                    /* Delegamos toda la lógica a la función manejadora y actualizamos el modo */
+                    mode = process_key_edit(key, mode);
+                }
+            }
+        } else {
+            /* Reinicio de estado al soltar el botón */
+            last_key = '\0';
+        }
 
-					/* Priorizar lo que el usuario está editando temporalmente */
-					if (edit_idx > 0) {
-						current_val = atof(edit_buf);
-					} else {
-						/* Si no hay edición en curso, mostrar valor real de RAM */
-						if (mode == UI_MODE_EDIT_LOW) current_val = cfg.threshold_low;
-						else if (mode == UI_MODE_EDIT_MEDIUM) current_val = cfg.threshold_medium;
-						else if (mode == UI_MODE_EDIT_HIGH) current_val = cfg.threshold_high;
-						else if (mode == UI_MODE_EDIT_CRITICAL) current_val = cfg.threshold_critical;
-					}
-
-					/* 2.2 Procesar la acción de la tecla */
-					
-					/* Escritura manual con números */
-					if ((key >= '0' && key <= '9') || key == '.') {
-						if (edit_idx < sizeof(edit_buf) - 1) {
-							edit_buf[edit_idx++] = key;
-							edit_buf[edit_idx] = '\0';
-						}
-					} 
-					/* A: Aumentar 5 grados */
-					else if (key == 'A') {
-						current_val += 5.0f;
-						snprintf(edit_buf, sizeof(edit_buf), "%.1f", (double)current_val);
-						edit_idx = strlen(edit_buf);
-					} 
-					/* B: Disminuir 5 grados */
-					else if (key == 'B') {
-						current_val -= 5.0f;
-						snprintf(edit_buf, sizeof(edit_buf), "%.1f", (double)current_val);
-						edit_idx = strlen(edit_buf);
-					} 
-					/* C: Confirmar y Guardar (Validando lógica térmica) */
-					else if (key == 'C') {
-						if (mode == UI_MODE_EDIT_LOW) cfg.threshold_low = current_val;
-						else if (mode == UI_MODE_EDIT_MEDIUM) cfg.threshold_medium = current_val;
-						else if (mode == UI_MODE_EDIT_HIGH) cfg.threshold_high = current_val;
-						else if (mode == UI_MODE_EDIT_CRITICAL) cfg.threshold_critical = current_val;
-
-						/* Regla estricta: L < M < H < C */
-						if (cfg.threshold_low < cfg.threshold_medium && 
-						    cfg.threshold_medium < cfg.threshold_high && 
-						    cfg.threshold_high < cfg.threshold_critical) {
-							
-							/* Guardar permanentemente en RAM */
-							config_state_set_thresholds(cfg.threshold_low, cfg.threshold_medium, 
-														cfg.threshold_high, cfg.threshold_critical);
-
-							ui_display_clear();
-							display_print("GUARDADO OK", 0, 16);
-							display_flush();
-							k_msleep(1000);
-							
-							/* Limpiar búfer para leer el nuevo valor confirmado */
-							edit_idx = 0;
-							memset(edit_buf, 0, sizeof(edit_buf));
-						} else {
-							/* Rechazar cambios por romper la escala de temperaturas */
-							ui_display_clear();
-							display_print("ERROR DE ORDEN", 0, 16);
-							display_print("L< M< H< C", 0, 32);
-							display_flush();
-							k_msleep(2000);
-						}
-					} 
-					/* #: Pasar al siguiente menú de forma cíclica */
-					else if (key == '#') {
-						/* Descartar cualquier cambio temporal no guardado */
-						edit_idx = 0;
-						memset(edit_buf, 0, sizeof(edit_buf));
-
-						if (mode == UI_MODE_EDIT_LOW) mode = UI_MODE_EDIT_MEDIUM;
-						else if (mode == UI_MODE_EDIT_MEDIUM) mode = UI_MODE_EDIT_HIGH;
-						else if (mode == UI_MODE_EDIT_HIGH) mode = UI_MODE_EDIT_CRITICAL;
-						else if (mode == UI_MODE_EDIT_CRITICAL) mode = UI_MODE_EDIT_LOW;
-					} 
-					/* *: Salir al monitor principal */
-					else if (key == '*') {
-						edit_idx = 0;
-						memset(edit_buf, 0, sizeof(edit_buf));
-						mode = UI_MODE_MONITOR; 
-					}
-					/* NOTA: La tecla 'D' simplemente cae al vacío y no hace nada */
-				}
-			}
-		} else {
-			/* --- REINICIO DE ESTADO AL SOLTAR --- */
-			/* Permite volver a registrar pulsaciones una vez levantado el dedo */
-			last_key = '\0';
-		}
-
-		k_msleep(20);
+        k_msleep(20);
 	}
 }
 
