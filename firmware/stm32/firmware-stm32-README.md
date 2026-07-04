@@ -22,7 +22,7 @@ pio device monitor       # monitor serial (115200 8N1, ajustar si cambiaste CONF
 | Enlace serie con ESP32 | PC10 (TX), PC11 (RX) | USART3 |
 | Teclado matricial 4×4 — filas | PC7, PA9, PA8, PB10 | GPIO salida |
 | Teclado matricial 4×4 — columnas | PB4, PB5, PB3, PA10 | GPIO entrada, pull-up |
-| Botón de apagado | PC3 | GPIO + EXTI |
+| Botón de usuario (B1 físico de la Nucleo) | PC13 | GPIO + EXTI |
 | Keep-alive hacia planta térmica externa (simulada) | PA4 | GPIO salida |
 
 Ver `zephyr/boards/nucleo_l476rg.overlay` para la definición completa — ese
@@ -30,8 +30,7 @@ archivo es la fuente de verdad, esta tabla es solo un resumen para no tener
 que abrirlo cada vez.
 
 **Pines evitados a propósito, no los reutilices:** PA13/PA14 (SWDIO/SWCLK —
-romperían la programación por USB) y PC13 (compartido con el botón de usuario
-B1 de la Nucleo).
+romperían la programación por USB).
 
 ## Estructura de `src/`
 

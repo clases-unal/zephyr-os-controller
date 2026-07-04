@@ -12,15 +12,19 @@
  *   - ESP32 (UART):           PC10 (TX), PC11 (RX), AF7 — USART3
  *   - Teclado filas:          PC7 (R0), PA9 (R1), PA8 (R2), PB10 (R3)
  *   - Teclado columnas:       PB4 (C0), PB5 (C1), PB3 (C2), PA10 (C3)
- *   - Botón de apagado:       PC3 (EXTI, debounce por software en el driver)
+ *   - Botón de usuario:       PC13 (EXTI, botón B1 físico de la Nucleo;
+ *                              debounce por software en power_status_manager.c)
  *   - Keep-alive calentador:  PA4
  *
  * Pines evitados a propósito (no los uses aunque parezcan libres):
  *   - PA13 / PA14: son SWDIO/SWCLK — reconfigurarlos como GPIO/SPI puede dejar
  *     la placa sin poder reprogramarse por USB.
- *   - PC13: es el mismo pin del botón de usuario (B1) de la Nucleo. Se usa
- *     internamente en el alias "sw0" que consume power_status_manager.c — abajo
- *     se repuntó ese alias hacia el nuevo botón de PC3 para no tocar ese .c.
+ *
+ * NOTA: en algún momento se evaluó mover este botón a un pin dedicado (PC3)
+ * para dejar PC13 completamente libre, pero esa migración nunca se ejecutó —
+ * el botón físico de usuario (B1) sigue siendo la fuente, en PC13, tal como
+ * se define abajo en el nodo "shutdown_button". El alias "sw0" apunta directo
+ * a ese nodo; power_status_manager.c no necesita saber en qué pin físico está.
  *
  * === CÓMO INTERCAMBIAR FILAS POR COLUMNAS DEL TECLADO ===
  * El driver (matrix_keypad.c) lee los pines por NOMBRE de nodo DeviceTree
@@ -95,10 +99,10 @@
 
 	keypad_cols {
 		compatible = "gpio-keys";
-		col_0: col_0 { gpios = <&gpiob 4  (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
-		col_1: col_1 { gpios = <&gpiob 5  (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
-		col_2: col_2 { gpios = <&gpiob 3  (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
-		col_3: col_3 { gpios = <&gpioa 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; };
+		col_0: col_0 { gpios = <&gpiob 4  (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>; };
+		col_1: col_1 { gpios = <&gpiob 5  (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>; };
+		col_2: col_2 { gpios = <&gpiob 3  (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>; };
+		col_3: col_3 { gpios = <&gpioa 10 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>; };
 	};
 };
 

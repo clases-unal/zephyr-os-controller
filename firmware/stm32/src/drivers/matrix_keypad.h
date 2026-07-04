@@ -8,9 +8,9 @@
  *     R2      7    8    9    C
  *     R3      *    0    #    D
  *
- * Pines (definidos en el overlay):
- *   Filas (salida): PC0, PC1, PC2, PC3
- *   Columnas (entrada pull-up): PC4, PC5, PC6, PC7
+ * Pines (definidos en el overlay, nucleo_l476rg.overlay):
+ *   Filas (salida):             PC7 (R0), PA9 (R1), PA8 (R2), PB10 (R3)
+ *   Columnas (entrada pull-up): PB4 (C0), PB5 (C1), PB3 (C2), PA10 (C3)
  *
  * El driver lee estos pines desde DeviceTree usando:
  *   DT_NODELABEL(row_0..row_3) y DT_NODELABEL(col_0..col_3).

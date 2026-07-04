@@ -19,9 +19,11 @@
 
 typedef struct {
 	uint32_t error_log_flags;
-	uint32_t system_boot_count;     /* Persiste en NVS — ver discussion.md Sección 8 */
-	uint32_t error_count[4];        /* Persiste en NVS */
-	uint8_t ntc_consecutive_failures; /* Persiste en NVS */
+	/* Candidato a NVS a futuro (no implementado, se reinicia a 0 en cada
+	 * boot) — ver la nota completa de mejora futura en telemetry_state.c. */
+	uint32_t system_boot_count;
+	uint32_t error_count[4];          /* Ídem: candidato a NVS a futuro */
+	uint8_t ntc_consecutive_failures; /* Transitorio: no necesita NVS, ver telemetry_state.c */
 } TelemetryState;
 
 void telemetry_state_init(void);

@@ -15,11 +15,29 @@
  * degradado) — la falla se reporta también en ERROR_FLAG_OLED_I2C para que
  * el LED Qb del registro de desplazamiento la refleje.
  *
- * CORRECCIÓN respecto a la versión anterior: el framebuffer nunca se
- * inicializaba de verdad — `display_ok` quedaba hardcodeado en `false` para
- * evitar un problema de heap no configurado (ver prj.conf,
+ * CORRECCIÓN HISTÓRICA (ya resuelta): en una versión anterior el framebuffer
+ * nunca se inicializaba de verdad — `display_ok` quedaba hardcodeado en
+ * `false` para evitar un problema de heap no configurado (ver prj.conf,
  * CONFIG_HEAP_MEM_POOL_SIZE). Esa era la causa raíz de que la OLED pareciera
  * "no encender" incluso con el cableado correcto: nunca se le pedía nada.
+ *
+ * TEMA VISUAL — fondo oscuro (fix de esta sesión): antes se llamaba a
+ * cfb_framebuffer_invert() en display_init(), lo que invierte la polaridad
+ * normal del SSD1306 y produce fondo blanco con texto negro. La polaridad
+ * NATIVA del controlador ya es "fondo oscuro" (píxeles apagados = negro,
+ * píxeles encendidos = el texto en blanco), que es el resultado deseado —
+ * por eso ahora simplemente NO se invierte nada. Si en el futuro se prefiere
+ * el esquema invertido, basta con volver a llamar cfb_framebuffer_invert()
+ * una vez en display_init().
+ *
+ * BUG "aparece en modo edición al arrancar" (fix de esta sesión): esto NO
+ * es un problema de este archivo ni del teclado — es causado por un pulso
+ * espurio del botón físico de usuario (PC13) durante el arranque, que
+ * power_status_manager.c interpretaba como una pulsación media real y por
+ * eso llamaba a ui_request_config_mode() sin que el usuario tocara nada.
+ * La explicación completa y la corrección están en power_status_manager.c.
+ * Este archivo solo necesitaba que display_ok funcionara de verdad (arriba)
+ * para que el síntoma fuera visible en primer lugar.
  */
 
 #include <zephyr/kernel.h>
@@ -27,6 +45,8 @@
 #include <zephyr/drivers/display.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "ui_keypad_task.h"
 #include "../drivers/matrix_keypad.h"
@@ -37,100 +57,100 @@
 
 LOG_MODULE_REGISTER(ui_keypad_task, LOG_LEVEL_INF);
 
+/* ── Configuración del hilo ──────────────────────────────────────────────── */
 #define STACK_SIZE        2048
-#define THREAD_PRIORITY   4       /* Media prioridad */
-#define SCAN_PERIOD_MS    20      /* Escaneo de teclado a 50Hz */
-#define TIMEOUT_TICKS     (30000 / SCAN_PERIOD_MS)  /* 30s en ticks */
+#define THREAD_PRIORITY   4
+#define SCAN_PERIOD_MS    20
+#define TIMEOUT_TICKS     (30000 / SCAN_PERIOD_MS)  /* 30s de inactividad en modo edición */
 
+/* ── Tipos ────────────────────────────────────────────────────────────────── */
+typedef enum {
+	UI_MODE_MONITOR,
+	UI_MODE_EDIT_LOW,
+	UI_MODE_EDIT_MEDIUM,
+	UI_MODE_EDIT_HIGH,
+	UI_MODE_EDIT_CRITICAL,
+	UI_MODE_SHUTDOWN,
+} ui_mode_t;
+
+/* ── Estado del módulo (file-scope) ──────────────────────────────────────── */
 static const struct device *display_dev = DEVICE_DT_GET(DT_NODELABEL(ssd1306));
-static bool display_ok  = false;
-static bool keypad_ok   = false;
+static bool display_ok = false;
+static bool keypad_ok  = false;
 
-/* Bandera para solicitar el cambio a modo edición desde otro hilo */
+/* Bandera de una sola escritura: power_status_manager.c la activa cuando
+ * detecta una pulsación media (1-2s) del botón físico, este hilo la consume
+ * en su propio bucle y la limpia. Ver ui_keypad_task.h para el prototipo
+ * público — antes se declaraba con "extern" directamente en el .c que la
+ * llamaba, ahora vive en el header como corresponde a cualquier función
+ * pública de este módulo. */
 volatile bool flag_request_config = false;
 
+/* ── Búfer para almacenar los números tecleados antes de guardar ─────────────*/
+static char edit_buf[8] = {0};
+static uint8_t edit_idx = 0;
+
+/* ── API pública ──────────────────────────────────────────────────────────── */
 void ui_request_config_mode(void)
 {
 	flag_request_config = true;
 }
 
-/* ── Modos de la UI ──────────────────────────────────────────────────────── */
-typedef enum {
-	UI_MODE_MONITOR,        /* Vista principal: temperatura, umbral, duty */
-	UI_MODE_EDIT_LOW,
-	UI_MODE_EDIT_MEDIUM,
-	UI_MODE_EDIT_HIGH,
-	UI_MODE_EDIT_CRITICAL,
-} ui_mode_t;
-
 /* ── Inicialización real del display ─────────────────────────────────────── */
 static bool display_init(void)
 {
 	if (!device_is_ready(display_dev)) {
-		LOG_ERR("SSD1306 no listo — verificar overlay (I2C3: PC0=SCL, PC1=SDA)");
+		LOG_ERR("SSD1306 no listo");
 		return false;
 	}
 
-	/* display_blanking_off(): el controlador SSD1306 arranca con la salida
-	 * en blanco (blanking) por diseño, para que el framebuffer se pueda
-	 * preparar antes de mostrar nada en pantalla. Sin este paso, aunque el
-	 * framebuffer se dibuje correctamente, físicamente nunca se ve nada. */
 	if (display_blanking_off(display_dev) != 0) {
-		LOG_ERR("display_blanking_off fallo");
 		return false;
 	}
-
-	/* cfb_framebuffer_init() reserva el buffer de pantalla en heap — por eso
-	 * prj.conf necesita CONFIG_HEAP_MEM_POOL_SIZE distinto de cero. Si esto
-	 * falla, casi siempre es por heap insuficiente, no por el bus I2C. */
 	if (cfb_framebuffer_init(display_dev) != 0) {
-		LOG_ERR("cfb_framebuffer_init fallo — revisar CONFIG_HEAP_MEM_POOL_SIZE en prj.conf");
 		return false;
 	}
 
-	/* --- AÑADIR ESTAS TRES LÍNEAS --- */
+	/* Fijamos la fuente más pequeña (0) obligatoriamente */
 	if (cfb_framebuffer_set_font(display_dev, 0) != 0) {
-		LOG_ERR("No se pudo cargar la fuente del OLED");
+		LOG_ERR("No se pudo cargar la fuente");
 		return false;
 	}
-	/* -------------------------------- */
 
+	/* Fondo oscuro: NO se invierte la polaridad nativa del SSD1306 (ver
+	 * nota de cabecera del archivo). cfb_framebuffer_clear(..., true)
+	 * limpia y refresca de una vez el panel físico con todo en negro. */
 	cfb_framebuffer_clear(display_dev, true);
-
-	cfb_framebuffer_clear(display_dev, true);
-	cfb_framebuffer_invert(display_dev);
-	LOG_INF("Display OLED listo");
+	LOG_INF("Display OLED listo (fondo oscuro)");
 	return true;
 }
 
 /* ── Helpers de display ──────────────────────────────────────────────────── */
 static void ui_display_clear(void)
 {
-	if (!display_ok) return;
+	if (!display_ok) {
+		return;
+	}
 	cfb_framebuffer_clear(display_dev, false);
 }
 
 static void display_print(const char *str, int col, int row)
 {
-	if (!display_ok) return;
+	if (!display_ok) {
+		return;
+	}
 	cfb_print(display_dev, str, col, row);
 }
 
 static void display_flush(void)
 {
-	if (!display_ok) return;
+	if (!display_ok) {
+		return;
+	}
 	cfb_framebuffer_finalize(display_dev);
 }
 
-/*
- * Layout de pantalla (128x64, 4 líneas de 16px de alto cada una — ya
- * funcionaba así antes de este cambio, se conserva la misma disposición):
- *   Fila 0  (y=0):  temperatura actual + marca de error de NTC
- *   Fila 1  (y=16): nivel térmico activo, o causa específica si es CRITICAL
- *   Fila 2  (y=32): duty cycle del ventilador
- *   Fila 3  (y=48): estado global del sistema (prioridad: Alarma Permanente >
- *                    falla de módulo auxiliar > "SISTEMA: ON")
- */
+/* ── Renderizado principal ───────────────────────────────────────────────── */
 static void render_monitor(void)
 {
 	ControlState ctrl;
@@ -142,52 +162,43 @@ static void render_monitor(void)
 	telemetry_state_get(&tel);
 
 	bool ntc_err    = (tel.error_log_flags & ERROR_FLAG_NTC_SENSOR) != 0;
-	bool oled_err   = (tel.error_log_flags & ERROR_FLAG_OLED_I2C) != 0;
 	bool keypad_err = (tel.error_log_flags & ERROR_FLAG_KEYPAD) != 0;
 	bool esp32_err  = (tel.error_log_flags & ERROR_FLAG_ESP32_LINK) != 0;
 
-	char line[22];
-
+	char line[16]; /* Buffer ajustado a lo que cabe en 128px con la fuente 0 */
 	ui_display_clear();
 
-	snprintf(line, sizeof(line), "T: %.1fC %s",
+	/* Fila 0: Temp (Max 12 chars: "Temp: 100.0C") */
+	snprintf(line, sizeof(line), "Temp: %.1f%s",
 		 (double)ctrl.current_temperature,
-		 ntc_err ? "[ERR]" : "");
+		 ntc_err ? "E" : "C");
 	display_print(line, 0, 0);
 
-	/* Fila 1: en CRITICAL se prioriza mostrar la causa específica (única
-	 * forma textual de distinguirla, ver discussion.md §7.3) por encima del
-	 * nombre genérico del umbral. */
+	/* Fila 1: Lvl (Max 12 chars: "Lvl: SOBRET") */
 	if (ctrl.current_threshold_code == THRESHOLD_CRITICAL) {
 		const char *cause_text = (ctrl.critical_cause == CRITICAL_CAUSE_SENSOR_FAULT)
-					  ? "CRIT: FALLA NTC"
-					  : "CRIT: SOBRETEMP";
+					  ? "Lvl: FALLA" : "Lvl: SOBRET";
 		display_print(cause_text, 0, 16);
 	} else {
-		static const char *threshold_names[] = { "FRIO", "BAJO", "MEDIO", "ALTO" };
-		snprintf(line, sizeof(line), "Umbral: %s",
-			 threshold_names[ctrl.current_threshold_code]);
+		static const char *threshold_names[] = { "FRIO", "BAJO", "MED", "ALTO" };
+		snprintf(line, sizeof(line), "Lvl: %s", threshold_names[ctrl.current_threshold_code]);
 		display_print(line, 0, 16);
 	}
 
-	snprintf(line, sizeof(line), "Fan: %u%%", ctrl.fan_pwm_duty_cycle);
+	/* Fila 2: PWM (Max 12 chars: "PWM: 100%") */
+	snprintf(line, sizeof(line), "PWM: %u%%", ctrl.fan_pwm_duty_cycle);
 	display_print(line, 0, 32);
 
-	/* Fila 3: un solo mensaje a la vez, por prioridad. Las fallas de NTC y
-	 * de la propia OLED NO se listan aquí a propósito (discussion.md §7.3):
-	 * NTC ya tiene representación completa en la fila 1 al escalar a
-	 * CRITICAL, y la OLED no puede reportar su propia falla. */
+	/* Fila 3: Sys (Max 12 chars: "Sys: ALARMA") */
 	if (!sys.system_enabled) {
-		display_print("ALARMA PERMANENTE", 0, 48);
+		display_print("Sys: ALARMA", 0, 48);
 	} else if (keypad_err) {
-		display_print("Teclado no disp.", 0, 48);
+		display_print("Sys: NO KEY", 0, 48);
 	} else if (esp32_err) {
-		display_print("ESP32 desconectado", 0, 48);
+		display_print("Sys: NO ESP", 0, 48);
 	} else {
-		display_print("SISTEMA: ON ", 0, 48);
+		display_print("Sys: ON", 0, 48);
 	}
-
-	ARG_UNUSED(oled_err); /* La OLED nunca puede reportar su propia falla en sí misma */
 
 	display_flush();
 }
@@ -195,23 +206,27 @@ static void render_monitor(void)
 static void render_edit(ui_mode_t mode, float current_val)
 {
 	static const char *labels[] = {
-		[UI_MODE_EDIT_LOW]      = "Umbral BAJO",
-		[UI_MODE_EDIT_MEDIUM]   = "Umbral MEDIO",
-		[UI_MODE_EDIT_HIGH]     = "Umbral ALTO",
-		[UI_MODE_EDIT_CRITICAL] = "Umbral CRITICO",
+		[UI_MODE_EDIT_LOW]      = "CONF: LOW",
+		[UI_MODE_EDIT_MEDIUM]   = "CONF: MED",
+		[UI_MODE_EDIT_HIGH]     = "CONF: HIGH",
+		[UI_MODE_EDIT_CRITICAL] = "CONF: CRIT",
 	};
 
-	char line[22];
+	char line[16];
 	ui_display_clear();
-	display_print("CONFIGURACION", 0, 0);
-	display_print(labels[mode], 0, 16);
-	snprintf(line, sizeof(line), "Valor: %.1f C", (double)current_val);
-	display_print(line, 0, 32);
-	display_print("A=+1 B=-1 D=OK *=Sal", 0, 48);
+
+	display_print(labels[mode], 0, 0);
+	snprintf(line, sizeof(line), "Val: %.1f", (double)current_val);
+	display_print(line, 0, 16);
+	
+	/* Ayudas visuales actualizadas al nuevo mapa de teclado */
+	display_print("A:+ B:- C:OK", 0, 32);
+	display_print("#:Nxt *:Exit", 0, 48);
+
 	display_flush();
 }
 
-/* ── Helpers de acceso a campos según el modo ────────────────────────────── */
+/* ── Helpers de acceso y teclado ─────────────────────────────────────────── */
 static float *field_for_mode(ui_mode_t mode, ConfigState *cfg)
 {
 	switch (mode) {
@@ -223,59 +238,40 @@ static float *field_for_mode(ui_mode_t mode, ConfigState *cfg)
 	}
 }
 
-/* ── Procesamiento de teclas ─────────────────────────────────────────────── */
 static ui_mode_t process_key_monitor(char key)
 {
-	switch (key) {
-	case '1': return UI_MODE_EDIT_LOW;
-	case '2': return UI_MODE_EDIT_MEDIUM;
-	case '3': return UI_MODE_EDIT_HIGH;
-	case '4': return UI_MODE_EDIT_CRITICAL;
-	default:  return UI_MODE_MONITOR;
-	}
+	/* Ya no procesamos teclas '1', '2', '3' o '4' para entrar a configuración. 
+	 * El acceso es exclusivo mediante pulsación media del botón PC13. */
+	return UI_MODE_MONITOR;
 }
 
 static ui_mode_t process_key_edit(char key, ui_mode_t mode)
 {
 	ConfigState cfg;
 	config_state_get(&cfg);
-
 	float *target = field_for_mode(mode, &cfg);
-	if (!target) return UI_MODE_MONITOR;
+	if (!target) {
+		return UI_MODE_MONITOR;
+	}
 
 	switch (key) {
 	case 'A': *target += 1.0f; break;
 	case 'B': *target -= 1.0f; break;
 	case 'D':
-		/* Validación obligatoria antes de confirmar (discussion.md §7.4):
-		 * low < medium < high < critical. Si falla, se rechaza el cambio
-		 * y se mantienen los límites previos — no se llega a escribir
-		 * en ConfigState. */
 		if (cfg.threshold_low < cfg.threshold_medium &&
 		    cfg.threshold_medium < cfg.threshold_high &&
 		    cfg.threshold_high < cfg.threshold_critical) {
 			config_state_set_thresholds(cfg.threshold_low, cfg.threshold_medium,
 						     cfg.threshold_high, cfg.threshold_critical);
-			LOG_INF("Umbrales actualizados: %.1f / %.1f / %.1f / %.1f",
-				(double)cfg.threshold_low, (double)cfg.threshold_medium,
-				(double)cfg.threshold_high, (double)cfg.threshold_critical);
 			return UI_MODE_MONITOR;
 		} else {
-			LOG_WRN("Configuracion invalida rechazada: %.1f / %.1f / %.1f / %.1f",
-				(double)cfg.threshold_low, (double)cfg.threshold_medium,
-				(double)cfg.threshold_high, (double)cfg.threshold_critical);
-			/* Se mantiene en modo edición del mismo campo para que el
-			 * usuario corrija; el mensaje de error visual se puede
-			 * agregar como una variante de render_edit() si se
-			 * necesita más adelante. */
-			return mode;
+			return mode; /* Orden inválido: rechazado, se queda en edición */
 		}
 	case '*':
-		return UI_MODE_MONITOR;   /* Cancelar sin guardar */
+		return UI_MODE_MONITOR;
 	default:
 		break;
 	}
-
 	return mode;
 }
 
@@ -286,16 +282,24 @@ static void ui_keypad_task_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
-	k_msleep(200); /* Esperar a que main() inicialice los estados globales */
-
-	LOG_INF("ui_keypad_task thread started");
+	k_msleep(200);
 
 	display_ok = display_init();
 	telemetry_state_set_error_flag(ERROR_FLAG_OLED_I2C, !display_ok);
 
+	/* --- MENSAJE DE BIENVENIDA --- */
+	if (display_ok) {
+		ui_display_clear();
+		display_print("INICIANDO...", 0, 0);
+		display_print("Sistema", 0, 32);
+		display_print("Termico", 0, 48);
+		display_flush();
+		k_msleep(2500); /* Mostrar por 2.5 segundos */
+	}
+	/* ----------------------------- */
+
 	keypad_ok = matrix_keypad_init();
 	if (!keypad_ok) {
-		LOG_ERR("Teclado matricial no listo — verificar overlay (filas/columnas)");
 		telemetry_state_set_error_flag(ERROR_FLAG_KEYPAD, true);
 	}
 
@@ -303,59 +307,187 @@ static void ui_keypad_task_thread(void *p1, void *p2, void *p3)
 	uint32_t  timeout = TIMEOUT_TICKS;
 
 	while (1) {
-		// --- AÑADIR ESTE BLOQUE ---
+		SystemState sys;
+		system_state_get(&sys);
+
+		/* Detectar petición de apagado general */
+		if (sys.shutdown_requested && mode != UI_MODE_SHUTDOWN) {
+			mode = UI_MODE_SHUTDOWN;
+			if (display_ok) {
+				ui_display_clear();
+				display_print("APAGANDO...", 0, 16);
+				display_print("Hasta luego!", 0, 32);
+				display_flush();
+				
+				/* Mostramos el mensaje durante 1.5s (de los 2s que nos da power_status_manager) */
+				k_msleep(1500); 
+				
+				/* Limpiar la pantalla y apagar físicamente el controlador SSD1306 */
+				ui_display_clear();
+				display_flush();
+				display_blanking_on(display_dev);
+			}
+		}
+
+		/* Si está apagando, bloquear cualquier otra acción y renderizado */
+		if (mode == UI_MODE_SHUTDOWN) {
+			k_msleep(100);
+			continue;
+		}
+
 		if (flag_request_config) {
 			flag_request_config = false;
 			if (display_ok) {
-				mode = UI_MODE_EDIT_LOW; // O la constante que uses para editar
-				timeout = TIMEOUT_TICKS;
+				if (mode == UI_MODE_MONITOR) {
+					mode = UI_MODE_EDIT_LOW;
+					timeout = TIMEOUT_TICKS;
+				} else {
+					mode = UI_MODE_MONITOR;
+				}
+				/* Limpiar el búfer al entrar o salir de edición */
+				edit_idx = 0;
+				memset(edit_buf, 0, sizeof(edit_buf));
 			}
 		}
-		// 1. Pintar la pantalla ANTES de esperar
+
+		/* 1. Pintar la pantalla */
 		if (display_ok) {
 			if (mode == UI_MODE_MONITOR) {
-				render_monitor(); // <-- Usamos tu función original
+				render_monitor();
 			} else {
-				// Buscar el valor del umbral actual para mostrarlo en la edición
 				ConfigState cfg;
 				config_state_get(&cfg);
 				float current_val = 0.0f;
 				
-				if (mode == UI_MODE_EDIT_LOW) current_val = cfg.threshold_low;
-				else if (mode == UI_MODE_EDIT_MEDIUM) current_val = cfg.threshold_medium;
-				else if (mode == UI_MODE_EDIT_HIGH) current_val = cfg.threshold_high;
-				else if (mode == UI_MODE_EDIT_CRITICAL) current_val = cfg.threshold_critical;
+				/* Si el usuario ha presionado números, previsualizamos su entrada */
+				if (edit_idx > 0) {
+					current_val = atof(edit_buf);
+				} else {
+					/* Si no ha tecleado nada, mostramos el umbral real de la RAM */
+					if (mode == UI_MODE_EDIT_LOW) current_val = cfg.threshold_low;
+					else if (mode == UI_MODE_EDIT_MEDIUM) current_val = cfg.threshold_medium;
+					else if (mode == UI_MODE_EDIT_HIGH) current_val = cfg.threshold_high;
+					else if (mode == UI_MODE_EDIT_CRITICAL) current_val = cfg.threshold_critical;
+				}
 
-				render_edit(mode, current_val); // <-- Usamos tu función original
+				render_edit(mode, current_val);
 			}
 		}
 
-		// 2. Leer el teclado
+		/* 2. Leer el teclado */
+		static char last_key = '\0'; /* Memoria de la tecla presionada (Antirrebote) */
 		char key;
 		bool key_pressed = keypad_ok && matrix_keypad_scan(&key);
 
 		if (key_pressed) {
-			timeout = TIMEOUT_TICKS;
+			timeout = TIMEOUT_TICKS; /* Reiniciar inactividad con cualquier tecla */
+			
+			/* --- LÓGICA ANTIRREBOTE (EDGE DETECTION) --- */
+			/* Solo procesar si la tecla es diferente a la del ciclo anterior */
+			if (key != last_key) {
+				last_key = key; /* Guardar estado de la tecla para no repetir */
 
-			if (mode == UI_MODE_MONITOR) {
-				// Usamos tu función que ya procesa la 'A' para saltar a edición
-				mode = process_key_monitor(key); 
-			} else {
-				// Modo edición normal
-				mode = process_key_edit(key, mode);
+				if (mode != UI_MODE_MONITOR && mode != UI_MODE_SHUTDOWN) {
+					
+					/* 2.1 Obtener el valor actual que vemos en pantalla */
+					float current_val = 0.0f;
+					ConfigState cfg;
+					config_state_get(&cfg); /* Estado real en RAM */
+
+					/* Priorizar lo que el usuario está editando temporalmente */
+					if (edit_idx > 0) {
+						current_val = atof(edit_buf);
+					} else {
+						/* Si no hay edición en curso, mostrar valor real de RAM */
+						if (mode == UI_MODE_EDIT_LOW) current_val = cfg.threshold_low;
+						else if (mode == UI_MODE_EDIT_MEDIUM) current_val = cfg.threshold_medium;
+						else if (mode == UI_MODE_EDIT_HIGH) current_val = cfg.threshold_high;
+						else if (mode == UI_MODE_EDIT_CRITICAL) current_val = cfg.threshold_critical;
+					}
+
+					/* 2.2 Procesar la acción de la tecla */
+					
+					/* Escritura manual con números */
+					if ((key >= '0' && key <= '9') || key == '.') {
+						if (edit_idx < sizeof(edit_buf) - 1) {
+							edit_buf[edit_idx++] = key;
+							edit_buf[edit_idx] = '\0';
+						}
+					} 
+					/* A: Aumentar 5 grados */
+					else if (key == 'A') {
+						current_val += 5.0f;
+						snprintf(edit_buf, sizeof(edit_buf), "%.1f", (double)current_val);
+						edit_idx = strlen(edit_buf);
+					} 
+					/* B: Disminuir 5 grados */
+					else if (key == 'B') {
+						current_val -= 5.0f;
+						snprintf(edit_buf, sizeof(edit_buf), "%.1f", (double)current_val);
+						edit_idx = strlen(edit_buf);
+					} 
+					/* C: Confirmar y Guardar (Validando lógica térmica) */
+					else if (key == 'C') {
+						if (mode == UI_MODE_EDIT_LOW) cfg.threshold_low = current_val;
+						else if (mode == UI_MODE_EDIT_MEDIUM) cfg.threshold_medium = current_val;
+						else if (mode == UI_MODE_EDIT_HIGH) cfg.threshold_high = current_val;
+						else if (mode == UI_MODE_EDIT_CRITICAL) cfg.threshold_critical = current_val;
+
+						/* Regla estricta: L < M < H < C */
+						if (cfg.threshold_low < cfg.threshold_medium && 
+						    cfg.threshold_medium < cfg.threshold_high && 
+						    cfg.threshold_high < cfg.threshold_critical) {
+							
+							/* Guardar permanentemente en RAM */
+							config_state_set_thresholds(cfg.threshold_low, cfg.threshold_medium, 
+														cfg.threshold_high, cfg.threshold_critical);
+
+							ui_display_clear();
+							display_print("GUARDADO OK", 0, 16);
+							display_flush();
+							k_msleep(1000);
+							
+							/* Limpiar búfer para leer el nuevo valor confirmado */
+							edit_idx = 0;
+							memset(edit_buf, 0, sizeof(edit_buf));
+						} else {
+							/* Rechazar cambios por romper la escala de temperaturas */
+							ui_display_clear();
+							display_print("ERROR DE ORDEN", 0, 16);
+							display_print("L< M< H< C", 0, 32);
+							display_flush();
+							k_msleep(2000);
+						}
+					} 
+					/* #: Pasar al siguiente menú de forma cíclica */
+					else if (key == '#') {
+						/* Descartar cualquier cambio temporal no guardado */
+						edit_idx = 0;
+						memset(edit_buf, 0, sizeof(edit_buf));
+
+						if (mode == UI_MODE_EDIT_LOW) mode = UI_MODE_EDIT_MEDIUM;
+						else if (mode == UI_MODE_EDIT_MEDIUM) mode = UI_MODE_EDIT_HIGH;
+						else if (mode == UI_MODE_EDIT_HIGH) mode = UI_MODE_EDIT_CRITICAL;
+						else if (mode == UI_MODE_EDIT_CRITICAL) mode = UI_MODE_EDIT_LOW;
+					} 
+					/* *: Salir al monitor principal */
+					else if (key == '*') {
+						edit_idx = 0;
+						memset(edit_buf, 0, sizeof(edit_buf));
+						mode = UI_MODE_MONITOR; 
+					}
+					/* NOTA: La tecla 'D' simplemente cae al vacío y no hace nada */
+				}
 			}
-		} else if (mode != UI_MODE_MONITOR) {
-			// 3. Cuenta el timeout solo si estás editando
-			if (timeout > 0) {
-				timeout--;
-			} else {
-				LOG_INF("Timeout de edicion alcanzado. Volviendo a Monitoreo.");
-				mode = UI_MODE_MONITOR;
-			}
+		} else {
+			/* --- REINICIO DE ESTADO AL SOLTAR --- */
+			/* Permite volver a registrar pulsaciones una vez levantado el dedo */
+			last_key = '\0';
 		}
 
 		k_msleep(20);
-	}}
+	}
+}
 
 K_THREAD_DEFINE(ui_keypad_tid, STACK_SIZE, ui_keypad_task_thread,
 		 NULL, NULL, NULL, THREAD_PRIORITY, 0, 0);
