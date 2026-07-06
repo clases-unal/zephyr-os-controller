@@ -136,24 +136,33 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 			frame |= BIT_QE | BIT_QF;
 			break;
 		case THRESHOLD_HIGH:
-			frame |= BIT_QE | BIT_QF;
-			if (blink_phase(tick, 500)) {
-				frame |= BIT_QG;
+			if (ctrl->keep_alive_revoked) {
+				/* Transición de bajada (Seguimos en sobretemperatura bloqueada):
+				 * - Qg deja de titilar (se anula / apaga por completo).
+				 * - Qe, Qf y Qh siguen titilando sincrónicamente a 500ms. */
+				if (blink_phase(tick, 500)) {
+					frame |= BIT_QE | BIT_QF | BIT_QH;
+				}
+			} else {
+				/* Comportamiento normal en HIGH (funcionamiento ordinario):
+				 * - Qe, Qf y Qg se quedan fijos. */
+				frame |= BIT_QE | BIT_QF | BIT_QG;
 			}
 			break;
 		case THRESHOLD_CRITICAL:
 			if (ctrl->keep_alive_revoked) {
-				/* ESTADO ESCALADO (OVERTMP, >20s): Efecto baliza entre barra térmica y Qh */
+				/* SOBRETEMPERATURA POR AGOTAMIENTO DEL TEMPORIZADOR (>20s):
+				 * - Toda la barra térmica (Qe, Qf, Qg) y Qh titilan simétricamente. */
 				if (blink_phase(tick, 500)) {
-					frame |= BIT_QE | BIT_QF | BIT_QG; 
-				} else {
-					frame |= BIT_QH; 
+					frame |= BIT_QE | BIT_QF | BIT_QG | BIT_QH; 
 				}
 			} else {
-				/* ESTADO INICIAL (CRITIC, <20s): Barra fija, Qh parpadeando */
-				frame |= BIT_QE | BIT_QF | BIT_QG;
+				/* ESTADO CRÍTICO INICIAL (RECIÉN LLEGADO, <20s):
+				 * - Qe y Qf fijos.
+				 * - Qg (Alto) titila a la misma frecuencia que Qh (500ms). */
+				frame |= BIT_QE | BIT_QF;
 				if (blink_phase(tick, 500)) {
-					frame |= BIT_QH;
+					frame |= BIT_QG | BIT_QH;
 				}
 			}
 			break;

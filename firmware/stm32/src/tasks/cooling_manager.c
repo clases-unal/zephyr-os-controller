@@ -156,9 +156,10 @@ static void apply_duty_cycle(uint8_t duty_percent)
  * 1. Obtener estados de control, configuración y telemetría.
  * 2. Determinar si el sensor NTC está en falla. Si es así, aplica el modo failsafe.
  * 3. Si el sensor está bien, clasifica la temperatura y determina la causa.
- * 4. Controla un temporizador para revocar el keep-alive si la temperatura crítica
- * se sostiene por mucho tiempo.
- * 5. Actualiza los estados y aplica el PWM al ventilador.
+ * 4. Controla un temporizador local para revocar el keep-alive si la temperatura crítica
+ * se sostiene por más de 20 segundos.
+ * 5. Bloquea la reactivación de la planta hasta alcanzar el punto de restauración (<= MEDIUM).
+ * 6. Actualiza los estados y aplica el PWM al ventilador.
  *
  * @param p1 Parámetro no usado (requerido por la firma de hilos de Zephyr).
  * @param p2 Parámetro no usado.
@@ -179,6 +180,10 @@ static void cooling_manager_thread(void *p1, void *p2, void *p3)
 
 	threshold_code_t last_threshold = THRESHOLD_COLD;
 	uint32_t time_in_critical_overtemp_ms = 0;
+	
+	/* Variable local para rastrear de forma segura si la planta fue revocada
+	 * sin necesidad de llamadas a métodos externos inexistentes en la API. */
+	bool local_keep_alive_revoked = false;
 
 	while (1) {
 		ControlState control;
@@ -203,9 +208,17 @@ static void cooling_manager_thread(void *p1, void *p2, void *p3)
 			cause = CRITICAL_CAUSE_SENSOR_FAULT;
 			duty = DUTY_CRITICAL;
 			LOG_WRN("Failsafe activo (NTC en falla): ventilador forzado a %u%%", duty);
+
+			/* GARANTÍA: Revocación inmediata del keep-alive por pérdida de sensor */
+			if (!local_keep_alive_revoked) {
+				LOG_ERR("Falla de sensor NTC detectada — revocando keep-alive de forma inmediata por seguridad");
+				heater_simulation_set_authorized(false);
+				control_state_set_keep_alive_revoked(true);
+				local_keep_alive_revoked = true;
+			}
 		} else {
 			threshold = classify_with_hysteresis(control.current_temperature,
-							      last_threshold, &config);
+								  last_threshold, &config);
 			cause = (threshold == THRESHOLD_CRITICAL) ? CRITICAL_CAUSE_OVERTEMP
 								   : CRITICAL_CAUSE_NONE;
 			duty = duty_for_threshold(threshold);
@@ -216,21 +229,35 @@ static void cooling_manager_thread(void *p1, void *p2, void *p3)
 			time_in_critical_overtemp_ms += PERIOD_MS;
 
 			if (time_in_critical_overtemp_ms >= CRITICAL_OVERTEMP_TIMEOUT_MS) {
-				LOG_ERR("CRITICAL por sobretemperatura sostenido %u ms — "
-					"revocando keep-alive de la planta externa",
-					time_in_critical_overtemp_ms);
-				heater_simulation_set_authorized(false);
-				control_state_set_keep_alive_revoked(true);
+				/* Evita redundancia de logs evaluando si ya estaba revocado */
+				if (!local_keep_alive_revoked) {
+					LOG_ERR("CRITICAL por sobretemperatura sostenido %u ms — "
+						"revocando keep-alive de la planta externa",
+						time_in_critical_overtemp_ms);
+					heater_simulation_set_authorized(false);
+					control_state_set_keep_alive_revoked(true);
+					local_keep_alive_revoked = true;
+				}
 			}
 		} else {
-			if (time_in_critical_overtemp_ms >= CRITICAL_OVERTEMP_TIMEOUT_MS) {
-				/* Se recuperó tras haber revocado el keep-alive: restaurar. */
-				LOG_INF("CRITICAL por sobretemperatura resuelto — "
-					"restaurando autorizacion de keep-alive");
-				heater_simulation_set_authorized(true);
-				control_state_set_keep_alive_revoked(false);
-			}
+			/* Al salir de la condición crítica de sobretemperatura, reiniciamos el contador */
 			time_in_critical_overtemp_ms = 0;
+
+			/* Lógica del Punto de Restauración (Histéresis profunda de seguridad) */
+			if (local_keep_alive_revoked) {
+				/* SOLO se restaura la planta si la temperatura descendió hasta MEDIUM o COLD */
+				if (threshold <= THRESHOLD_MEDIUM) {
+					LOG_INF("Temperatura segura alcanzada (<= MEDIUM) — "
+						"restaurando autorizacion de keep-alive");
+					heater_simulation_set_authorized(true);
+					control_state_set_keep_alive_revoked(false);
+					local_keep_alive_revoked = false;
+				} else {
+					/* Si la temperatura está en HIGH, mantenemos el bloqueo de seguridad activo */
+					heater_simulation_set_authorized(false);
+					control_state_set_keep_alive_revoked(true);
+				}
+			}
 		}
 		control_state_set_time_in_critical(time_in_critical_overtemp_ms);
 
