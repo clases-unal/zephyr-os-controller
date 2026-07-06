@@ -1,0 +1,111 @@
+<mxfile host="Electron">
+  <diagram name="Page-1" id="n1nHcdFhrxFO9C1ZZySL">
+    <mxGraphModel dx="2138" dy="1326" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-50" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);verticalAlign=top;fontSize=14;" value="MAPA VISUAL DE SALIDA (Bits 0 a 7)" vertex="1">
+          <mxGeometry height="349" width="2513" x="40" y="274" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-51" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);verticalAlign=top;fontSize=14;" value="Comportamiento Crítico y Failsafe" vertex="1">
+          <mxGeometry height="299" width="931" x="1600" y="314" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-52" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);verticalAlign=top;fontSize=14;" value="Comportamiento Térmico" vertex="1">
+          <mxGeometry height="299" width="1142" x="70" y="314" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-53" parent="1" style="whiteSpace=wrap;strokeWidth=2;verticalAlign=top;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="LEDs de Sistema e Interfaz" vertex="1">
+          <mxGeometry height="249" width="330" x="1240" y="339" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-54" parent="WjkEEo7yfAV_ZsY3lFkx-53" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="ESTADO NORMAL:&#xa;Bit 0 (Blanco): Status Sistema - Heratbeat&#xa;Bit 1 (Azul): OLED&#xa;Bit 2 (Azul): Enlace ESP32&#xa;Bit 3 (Rojo): Alarma Permanente" vertex="1">
+          <mxGeometry height="174" width="260" x="43" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-55" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);align=center;verticalAlign=top;fontSize=20;" value="ESTADOS LÓGICOS (ENTRADAS)" vertex="1">
+          <mxGeometry height="154" width="2431" x="99" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-56" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);verticalAlign=top;fontSize=14;" value="Críticos y Falla (Exclusivo)" vertex="1">
+          <mxGeometry height="104" width="841" x="1659" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-57" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);verticalAlign=top;fontSize=14;" value="Nivel Térmico (Exclusivo)" vertex="1">
+          <mxGeometry height="104" width="1003" x="129" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-58" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="COLD" vertex="1">
+          <mxGeometry height="54" width="104" x="164" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-59" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="LOW" vertex="1">
+          <mxGeometry height="54" width="96" x="419" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-60" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="MEDIUM" vertex="1">
+          <mxGeometry height="54" width="125" x="674" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-61" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="HIGH" vertex="1">
+          <mxGeometry height="54" width="100" x="997" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-62" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="CRIT &amp;lt; 20s" vertex="1">
+          <mxGeometry height="54" width="141" x="1694" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-63" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="OVERTMP &amp;gt;= 20s" vertex="1">
+          <mxGeometry height="54" width="192" x="1979" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-64" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="SENSOR FAULT" vertex="1">
+          <mxGeometry height="54" width="181" x="2285" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-65" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="COLD:&#xa;Bit 4 (Verde) Parpadeo" vertex="1">
+          <mxGeometry height="78" width="223" x="105" y="425" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-66" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="LOW:&#xa;Bit 4 (Verde) Fijo" vertex="1">
+          <mxGeometry height="78" width="179" x="378" y="425" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-67" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="MEDIUM:&#xa;Bits 4 (Verde) + 5 (Amarillo) Fijos" vertex="1">
+          <mxGeometry height="102" width="260" x="607" y="413" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-68" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="HIGH:&#xa;Bits 4, 5 Fijos + 6 (Naranja) Parpadeo" vertex="1">
+          <mxGeometry height="102" width="260" x="917" y="413" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-69" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="CRIT &amp;lt; 20s:&#xa;Bits 4, 5, 6 Fijos&#xa;+ Bit 7 (Rojo) Parpadeo Lento" vertex="1">
+          <mxGeometry height="126" width="260" x="1635" y="401" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-70" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="OVERTMP &amp;gt;= 20s:&#xa;EFECTO BALIZA a 2Hz&#xa;(Bits 4, 5, 6 alternan con Bit 7)" vertex="1">
+          <mxGeometry height="126" width="260" x="1945" y="401" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-71" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="FALLA SENSOR:&#xa;Barra Térmica APAGADA&#xa;Bit 7 (Rojo) Fijo" vertex="1">
+          <mxGeometry height="102" width="241" x="2255" y="413" as="geometry" />
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-72" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-58" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=-0.01;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-65" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-73" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-59" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=-0.01;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-66" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-74" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-60" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-67" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-75" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-61" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-68" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-76" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-62" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-69" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-77" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-63" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-70" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WjkEEo7yfAV_ZsY3lFkx-78" edge="1" parent="1" source="WjkEEo7yfAV_ZsY3lFkx-64" style="curved=1;dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;" target="WjkEEo7yfAV_ZsY3lFkx-71" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,5 +1,8 @@
-/*
- * cooling_manager.h — Determinación de umbral térmico + control PWM del ventilador
+/**
+ * @file cooling_manager.h
+ * @brief Determinación de umbral térmico y control PWM del ventilador.
+ *
+ * Expone la interfaz de inicialización para el subsistema de refrigeración.
  */
 
 #ifndef COOLING_MANAGER_H
@@ -7,9 +10,13 @@
 
 #include <stdbool.h>
 
-/*
- * Verifica que el dispositivo PWM esté listo. Se llama internamente desde el
- * propio hilo al arrancar (no requiere ser invocada desde main.c).
+/**
+ * @brief Verifica que el dispositivo PWM esté listo y configurado.
+ *
+ * Se llama internamente desde el propio hilo de refrigeración al arrancar.
+ * No requiere ser invocada manualmente desde main.c.
+ *
+ * @return true si el periférico PWM está listo para usarse, false en caso contrario.
  */
 bool cooling_manager_init(void);
 

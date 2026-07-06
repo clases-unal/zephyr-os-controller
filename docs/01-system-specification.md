@@ -1,151 +1,149 @@
-# 01 — Especificación del Sistema
+# 01-SYSTEM-SPECIFICATION
+## Sistema de Control Térmico de Alta Disponibilidad
 
-## 1. Objetivo
-
-Diseñar e implementar un sistema embebido de control térmico de alta
-disponibilidad sobre una placa STM32L476RG (Nucleo) corriendo Zephyr OS, capaz
-de:
-
-- Medir temperatura de forma continua y confiable.
-- Reaccionar a esa temperatura controlando un ventilador por PWM.
-- Comunicar su estado a un módulo ESP32 externo.
-- Ofrecer una interfaz local de monitoreo y configuración (pantalla OLED +
-  teclado matricial).
-- Representar su estado operativo mediante una barra de LEDs, de forma que un
-  observador pueda saber qué está pasando sin necesidad de leer ni la OLED ni
-  el monitor serial.
-- Degradarse de forma segura y predecible ante fallas de sus propios
-  subsistemas (sensor, interfaz local, enlace con el ESP32), en vez de fallar
-  de forma silenciosa o indefinida.
-
-"Alta disponibilidad" en este proyecto no significa redundancia de hardware
-(no hay sensores ni controladores duplicados) — significa que el sistema
-**nunca deja de tener una respuesta definida** ante cualquier combinación de
-fallas de sus módulos periféricos, incluso si esa respuesta es "detener todo
-de forma segura y avisarlo con claridad".
-
-## 2. Alcance
-
-Incluye: firmware del STM32 (control térmico, HMI local, protocolo hacia
-ESP32, representación visual de estado). Incluye el contrato de interfaz
-hacia el ESP32 (formato de paquetes), pero **no** incluye el firmware del
-ESP32 en sí — ver `firmware/esp32/README.md` para el estado de eso.
-
-No incluye: diseño de PCB, caracterización eléctrica instrumentada del
-circuito (sin multímetro/osciloscopio/analizador lógico disponibles durante
-el desarrollo), ni un portal web o dashboard remoto (responsabilidad del
-ESP32, fuera de este documento).
-
-## 3. Requisitos funcionales
-
-| ID | Requisito |
-|---|---|
-| RF-01 | El sistema debe medir la temperatura mediante un termistor NTC y filtrarla para reducir ruido de lectura. |
-| RF-02 | El sistema debe clasificar la temperatura filtrada en uno de 5 niveles (FRÍO, BAJO, MEDIO, ALTO, CRÍTICO) contra 4 umbrales configurables, con histéresis para evitar oscilación cerca de los límites. |
-| RF-03 | El sistema debe controlar la velocidad de un ventilador por PWM en función del nivel térmico activo. |
-| RF-04 | El sistema debe permitir editar los 4 umbrales de temperatura desde un teclado matricial local, validando que se mantenga el orden BAJO < MEDIO < ALTO < CRÍTICO antes de aceptar el cambio. |
-| RF-05 | El sistema debe mostrar en una pantalla OLED local: temperatura actual, nivel térmico (o causa específica si es CRÍTICO), duty cycle del ventilador, y estado global del sistema. |
-| RF-06 | El sistema debe representar su estado operativo completo mediante 8 LEDs controlados por un registro de desplazamiento, de forma que sea diagnosticable sin pantalla ni monitor serial. |
-| RF-07 | El sistema debe enviar telemetría periódica al ESP32 por UART, con un protocolo de tramas verificado por CRC16. |
-| RF-08 | El sistema debe detectar la pérdida del enlace con el ESP32 mediante heartbeats bidireccionales, y reflejarlo visualmente. |
-| RF-09 | El sistema debe detectar la falla del sensor NTC (lectura fuera de rango físico válido) y entrar en modo failsafe (ventilador a máxima velocidad, LED de causa específica). |
-| RF-10 | El sistema debe permitir apagar el sistema de forma ordenada mediante un botón físico dedicado, deteniendo limpiamente todos los subsistemas activos. |
-| RF-11 | El sistema debe simular una fuente de calor externa (para fines de demostración/pruebas) mediante un GPIO de "keep-alive" pulsado periódicamente, y debe poder revocar esa autorización de forma autónoma si la temperatura permanece en CRÍTICO por sobretemperatura más allá de un tiempo de tolerancia. |
-| RF-12 | Ante una falla sostenida e irrecuperable del sensor NTC, el sistema debe entrar en Alarma Permanente: deshabilitarse completamente y señalizarlo de forma indefinida hasta que una persona intervenga físicamente. |
-
-## 4. Requisitos no funcionales
-
-| ID | Requisito |
-|---|---|
-| RNF-01 | Toda estructura de estado compartida entre hilos debe estar protegida por su propio mutex — ningún hilo accede a datos de otro directamente. |
-| RNF-02 | El sistema debe operar con lógica de 3.3V en todos los periféricos (sin conversores de nivel disponibles). |
-| RNF-03 | El sistema debe seguir funcionando en modo degradado (sin OLED, sin teclado, sin enlace ESP32) mientras el lazo de control térmico en sí siga operativo — la pérdida de un módulo periférico no debe detener el control térmico. |
-| RNF-04 | El código debe estar organizado por responsabilidad única: drivers/ (hardware puro), state/ (datos compartidos), protocol/ (formato de comunicación), tasks/ (lógica de negocio por hilo) — ver `02-firmware-architecture.md`. |
-| RNF-05 | Todos los parámetros de tiempo (períodos de hilos, timeouts, temporizadores de histéresis) deben ser lo suficientemente cortos para ser observables en una demostración en vivo de duración acotada. |
-
-## 5. Restricciones
-
-- Sin instrumentación de laboratorio disponible (multímetro, osciloscopio,
-  generador de señal, analizador lógico) — toda validación es funcional, no
-  eléctrica (ver `05-validation-plan.md`).
-- Tiempo de desarrollo acotado (proyecto académico de pregrado).
-- Alimentación y lógica exclusivamente a 3.3V.
-- Placa fija: Nucleo-L476RG, sin posibilidad de rediseño de PCB.
-
-## 6. Hardware empleado
-
-Ver `firmware/stm32/README.md` para la tabla completa de pines. Componentes
-principales: STM32L476RG (Nucleo), termistor NTC 10kΩ B25/50=3470K, ventilador
-DC controlado por PWM, registro de desplazamiento SN74HC595N + 8 LEDs, OLED
-SSD1306 128×64 I2C, teclado matricial 4×4, módulo ESP32 (enlace UART), botón
-físico dedicado para apagado.
-
-## 7. Modos de operación
-
-| Modo | Descripción | Cómo se entra | Cómo se sale |
-|---|---|---|---|
-| Normal | Control térmico activo, HMI disponible, enlace ESP32 intentando conectar/conectado | Estado por defecto tras el arranque | — |
-| Degradado (parcial) | Uno o más módulos periféricos (OLED, teclado, ESP32) no disponibles, pero el lazo de control térmico sigue activo | Falla de inicialización o timeout de heartbeat de un módulo periférico | El módulo vuelve a responder |
-| Failsafe térmico | Sensor NTC en falla; ventilador forzado a 100%, CRÍTICO por causa SENSOR_FAULT | 5 lecturas ADC consecutivas fuera de rango físico | Sensor vuelve a leer dentro de rango |
-| Alarma Permanente | Sistema deshabilitado por completo, requiere intervención humana | Falla de NTC sostenida más allá del umbral de recuperación (ver `03-state-machines.md`) | Ciclo de energía físico tras corregir la causa — **no hay salida por software** |
-| Shutdown | Apagado ordenado en curso | Pulsación larga (≥3s) del botón físico dedicado | Automático al terminar la secuencia de detención de todos los hilos |
-
-## 8. Alarmas y seguridad
-
-- **CRÍTICO por sobretemperatura**: temperatura ≥ `threshold_critical`. Si se
-  sostiene más de 20s sin recuperarse, se revoca automáticamente la
-  autorización de la planta térmica externa (GPIO keep-alive) como medida de
-  seguridad adicional, independientemente de cualquier acción del usuario.
-- **CRÍTICO por falla de sensor**: lectura ADC fuera de rango físico válido
-  durante 5 ciclos consecutivos. Failsafe inmediato (ventilador a 100%). Si
-  la falla persiste sin recuperación, escala a Alarma Permanente.
-- **Alarma Permanente**: es intencionalmente irreversible por software — la
-  filosofía de diseño es que una falla de sensor sostenida es una condición
-  que requiere revisión física del cableado/hardware, no algo que el
-  firmware deba "reintentar para siempre" sin que un humano se entere.
-
-## 9. Casos de uso
-
-1. **Operación normal**: el sistema mide temperatura, ajusta el ventilador,
-   muestra el estado en OLED y LEDs, reporta telemetría al ESP32.
-2. **Ajuste de umbrales**: el usuario navega el teclado, entra a modo edición
-   de un umbral, lo modifica, confirma — el sistema valida el orden y aplica
-   el cambio, notificando también al ESP32.
-3. **Pérdida temporal del enlace ESP32**: el sistema detecta la ausencia de
-   heartbeats, lo señaliza en el LED Qc y en la OLED, sigue controlando la
-   temperatura con normalidad, y se resincroniza automáticamente (reenvía
-   diagnóstico + configuración) cuando el enlace vuelve.
-4. **Sobretemperatura sostenida**: el sistema escala progresivamente
-   (BAJO→MEDIO→ALTO→CRÍTICO), lo refleja en la barra de LEDs, y si el
-   CRÍTICO no se resuelve en 20s, corta la autorización de la fuente de
-   calor externa.
-5. **Falla del sensor NTC**: el sistema entra en failsafe, lo señaliza de
-   forma inconfundible en el LED Qh (fijo, distinto del parpadeo de
-   sobretemperatura), y si no se recupera, escala a Alarma Permanente.
-6. **Apagado deliberado**: el usuario mantiene presionado el botón físico
-   ≥3s; el sistema detiene ordenadamente todos sus subsistemas y lo
-   señaliza con el único LED que sigue activo durante ese proceso.
+Este documento detalla las especificaciones técnicas del sistema, las características eléctricas e internas de los componentes de hardware seleccionados y la parametrización de los periféricos del microcontrolador STM32L476RG bajo el sistema operativo de tiempo real Zephyr OS.
 
 ---
 
-## Anexo — Analogías para conceptos técnicos
+## 1. Introducción y Alcance del Sistema
 
-**Histéresis con margen de 2°C**: es lo mismo que el termostato de una casa —
-no se apaga la calefacción exactamente a 20°C y se prende exactamente a
-19.99°C, porque eso haría que el sistema estuviera prendiendo y apagando
-constantemente por el ruido natural de la medición. Se le da un "colchón": si
-ya estaba encendida, se apaga solo cuando baja claramente por debajo del
-punto de referencia (no apenas lo toca).
+El proyecto consiste en un **Sistema de Control Térmico de Alta Disponibilidad** diseñado para monitorear variables de temperatura ambiente o de maquinaria mediante una sonda NTC, gestionar dinámicamente un actuador de ventilación forzada en función de umbrales térmicos configurables, y proveer una interfaz de usuario local (pantalla OLED y teclado matricial) junto con telemetría visual (barra de LEDs mediante un registro de desplazamiento).
 
-**Alarma Permanente como "fusible que hay que cambiar a mano"**: un fusible
-quemado no se repara solo con reiniciar el circuito — hay que abrir la caja y
-revisarlo físicamente. La Alarma Permanente funciona igual a propósito: si el
-sistema decidiera "reintentar solo" indefinidamente ante una falla de sensor,
-alguien podría no enterarse nunca de que hay un cable suelto.
+### Entorno de Desarrollo y Despliegue
+* **Microcontrolador Objetivo:** STMicroelectronics STM32L476RG (Arquitectura ARM Cortex-M4 con FPU, ejecutándose hasta a 80 MHz).
+* **Placa de Desarrollo:** NUCLEO-L476RG.
+* **Sistema Operativo:** Zephyr OS RTOS, seleccionado por su robustez, abstracción de hardware mediante *Devicetree* (vía archivos `.overlay`), y un planificador nativo preentivo altamente eficiente para sistemas embebidos críticos.
+* **Ecosistema de Compilación:** PlatformIO integrado sobre Visual Studio Code (VSCode).
 
-**Heartbeat como "¿sigues ahí?" periódico**: es análogo a un chat que muestra
-"escribiendo..." o "en línea" — cada cierto tiempo cada lado le confirma al
-otro que sigue activo, y si ese aviso deja de llegar por más tiempo del esperado,
-se asume que la conexión se cayó, aunque nadie haya cerrado la sesión
-explícitamente. "Sigue activo" es literalmente lo único que confirma un
-heartbeat — no transporta ningún otro dato.
+---
+
+## 2. Especificación del Hardware y Componentes Externos
+
+El diseño de hardware externo está estructurado para aislar la etapa lógica de control de la etapa de potencia industrial, garantizando la inmunidad al ruido y la robustez del sistema ante fallos eléctricos.
+
+### 2.1. Sensor de Temperatura (Sonda NTC)
+El sistema implementa una sonda con termistor NTC encapsulada en acero inoxidable con un cable blindado de 60 cm. Su caracterización técnica es la siguiente:
+* **Rango de Operación:** -30 °C a +120 °C.
+* **Resistencia Nominal:** 10 kΩ a una temperatura de referencia de 25 °C (T₀ = 298.15 K).
+* **Constante Beta (β₂₅/₅₀):** 3470 K. 
+
+#### Circuito de Acondicionamiento (Divisor de Tensión)
+Para traducir los cambios de resistencia del termistor en una señal de tensión legible por el microcontrolador, se implementa un divisor de voltaje conectado a la línea de alimentación analógica estabilizada de 3.3 V (V_REF).
+* **Resistencia de Pull-Up (R_pull):** Resistencia fija de 10 kΩ con una tolerancia estricta del 1% y un bajo coeficiente de temperatura. Esta precisión es fundamental para mitigar desviaciones térmicas y errores de ganancia en la lectura analógica.
+* **Ecuación de Transferencia:** La tensión medida en el nodo central (conectado al pin PA0 del ADC) se define matemáticamente como:
+  
+    V_out = V_REF * [ R_NTC / (R_pull + R_NTC) ]
+
+* **Algoritmo de Conversión Interna (Steinhart-Hart Simplificado):** Una vez digitalizada la tensión por el ADC, el firmware recupera el valor de la resistencia actual del termistor (R_NTC) y aplica el modelo Beta para linealizar la respuesta y obtener la temperatura absoluta en Kelvin (T):
+  
+    1 / T = (1 / T₀) + (1 / β) * ln(R_NTC / R₀)
+    
+    Posteriormente, se realiza la conversión a grados Celsius: T_C = T - 273.15.
+
+### 2.2. Etapa de Potencia y Control del Ventilador
+La planta externa cuenta con un actuador mecánico de refrigeración por aire (ventilador) cuyas especificaciones eléctricas nominales son:
+* **Tensión de Alimentación:** 12 Vcc (Voltaje real de la fuente externa dedicada).
+* **Consumo de Corriente:** 0.1 A en régimen de funcionamiento continuo a máxima velocidad.
+
+Para conmutar la carga de corriente continua mediante la señal PWM del microcontrolador sin introducir ruidos de conmutación inductiva o corrientes de retorno al dominio analógico/digital del STM32, se ha diseñado una etapa tripartita de aislamiento, pre-conducción y potencia:
+
+`[STM32 - PB0] --> [Optoacoplador 6N137] --> [Driver TC4429CPA] --> [MOSFET IRFZ44ZPbF] --> [Ventilador 12V]`
+
+1.  **Aislamiento Galvánico (Optoacoplador 6N137 - Lite-On):** Se utiliza un optoacoplador de alta velocidad basado en un LED emisor infrarrojo y un fotodiodo integrado con un amplificador estroboscópico de salida lógica tipo Open-Collector. Soporta tasas de conmutación de hasta 10 MBd, lo que garantiza una distorsión nula del ciclo de trabajo a la frecuencia de PWM de trabajo (25 kHz). Su aislamiento protege por completo los pines lógicos de la placa Nucleo contra picos de tensión transitorios del motor.
+2.  **Driver de Compuerta (TC4429CPA - Microchip):** Dado que la salida del optoacoplador posee limitaciones de corriente y un comportamiento Open-Collector, se integra el TC4429CPA, un driver de MOSFET de alta velocidad e inversión lógica capaz de suministrar picos de corriente de hasta 6 A para cargar y descargar rápidamente la capacitancia de entrada de la compuerta (*Gate*) del MOSFET. Opera en el dominio de alimentación intermedio de 5 Vcc.
+3.  **Transistor de Potencia (MOSFET IRFZ44ZPbF):** Un transistor de efecto de campo de canal N clasificado para soportar hasta 49 A y 55 V. 
+
+#### Justificación del Sobredimensionamiento
+Aunque el ventilador consume apenas 0.1 A (una fracción diminuta de la capacidad del transistor), la selección del IRFZ44ZPbF se fundamenta en principios de fiabilidad:
+* **Resistencia en Conducción Mínima (R_DS(on)):** Posee una resistencia interna típica de apenas 13.9 mΩ cuando está totalmente saturado. La disipación de potencia estática en el transistor se calcula mediante la ley de Joule:
+  
+    P_disipada = I² * R_DS(on) = (0.1 A)² * 0.0139 Ω = 0.000139 W (139 µW)
+    
+    Esta disipación térmica es virtualmente nula, eliminando la necesidad de disipadores físicos de calor y garantizando que el componente opere a temperatura ambiente constante, extendiendo drásticamente el Tiempo Medio Entre Fallos (MTBF) de la placa.
+* **Inmunidad a Transitorios:** Los motores de ventilación forzada generan fuerzas contraelectromotrices considerables durante el frenado o conmutación PWM rápida. Un MOSFET clasificado para 49 A absorbe estos transitorios sin aproximarse a sus límites de ruptura por avalancha (*Avalanche Breakdown*).
+* **Regulador de Voltaje de Soporte Lógico (L78S05CV):** Provee una línea regulada y estable de 5 Vcc con una capacidad de hasta 2 A a partir de la fuente principal de 12 Vcc. Esta línea alimenta exclusivamente la electrónica interna de control del driver de compuerta y el registro de desplazamiento, aislando los picos de conmutación de la fuente de alimentación del microcontrolador.
+
+### 2.3. Interfaz de Usuario Visual (OLED SSD1306)
+* **Tecnología del Módulo:** Pantalla OLED monocromática de 128x64 píxeles.
+* **Controlador Embebido:** SSD1306.
+* **Protocolo de Comunicación:** Bus serial I2C (mapeado físicamente en el periférico I2C3 del microcontrolador).
+* **Consideración de Diseño de Niveles Lógicos:** El módulo se conecta directamente a la línea de alimentación de 3.3 V del STM32. La comunicación se realiza **sin resistencias de pull-up externas** en el circuito impreso de soporte. El diseño aprovecha de forma explícita las resistencias internas de pull-up programables de los pines del periférico I2C3 en el STM32L476RG. Esto simplifica el ruteado de la placa y garantiza la compatibilidad total de niveles lógicos a 3.3 V, operando de forma segura dentro del margen de ruido electromagnético tolerado por el controlador SSD1306.
+
+### 2.4. Barra de Representación Lógica (Registro de Desplazamiento SN74HC595N)
+Para gestionar la telemetría visual local sin agotar los pines de Entrada/Salida de Propósito General (GPIO) del microcontrolador, se reincorpora al diseño un único circuito integrado **SN74HC595N** de 8 bits con registros de almacenamiento de salida tipo *Latch* de tres estados.
+* **Alimentación Eléctrica:** Conectado a la línea estable de 5 Vcc provista por el regulador L78S05CV. Esto garantiza una óptima luminosidad en los 8 LEDs de telemetría (`Qa` a `Qh`) acoplados a sus salidas.
+* **Interfaz de Control:** Se conecta al periférico SPI1 del microcontrolador a través de tres líneas de señal: Reloj serie (SCK), Entrada de datos serie (MOSI) y una línea dedicada de GPIO gestionada manualmente por software para actuar como el reloj de almacenamiento (*Latch* / RCLK).
+* **Análisis del Umbral Lógico (Voltajes de Entrada):** Al alimentar el SN74HC595N a 5 Vcc, la tensión mínima requerida en sus entradas lógicas para ser interpretada de forma segura como un "Alto" lógico (V_IH) se sitúa típicamente en 3.5 V (0.7 * V_CC). Dado que las salidas del STM32 operan a un máximo de 3.3 V, el sistema trabaja en un margen de acoplamiento estrecho. En pruebas experimentales estáticas dentro de un entorno controlado en protoboard, las transiciones lógicas se validan de forma consistente debido a los márgenes térmicos favorables del silicio del SN74HC595N; no obstante, el firmware asegura la máxima estabilidad configurando las salidas del SPI1 del microcontrolador en modo de alta velocidad (*High-Speed Drive Mode*) para optimizar los tiempos de subida de los flancos.
+
+### 2.5. Teclado Matricial 4x4
+Una matriz física de 16 pulsadores organizados en 4 filas y 4 columnas. Las filas están asignadas a pines configurados como entradas con resistencias de pull-up activadas internamente por el STM32, mientras que las columnas operan como salidas lógicas que el firmware conmuta de forma secuencial (barrido activo en bajo) para detectar de forma inequívoca la pulsación de cualquier tecla sin rebotes perjudiciales.
+
+---
+
+## 3. Especificación y Configuración de Periféricos del Microcontrolador (STM32L476RG)
+
+La abstracción de hardware implementada mediante los nodos de configuración del subsistema Zephyr OS garantiza un acceso seguro a registros mediante controladores validados por la comunidad. A continuación, se detalla formalmente el uso y la configuración exacta de cada periférico:
+
+### 3.1. Convertidor Analógico-Digital (ADC1 - Pin PA0)
+* **Mapeo físico:** Pin `PA0` (Canal 5 de entrada del ADC1).
+* **Resolución Configurada:** 12 bits de resolución de conversión. Esto implica que el rango analógico de tensión de referencia (0.0 V a 3.3 V) se cuantifica discretamente en un rango numérico entero que va de `0` a `4095`.
+* **Justificación de Conveniencia Técnica:** La utilización de una resolución de 12 bits proporciona una precisión analógica de:
+  
+    ΔV = 3.3 V / 4096 = 0.805 mV por paso discreto del ADC.
+    
+    Al combinarse con la curva exponencial de la sonda NTC, esta configuración otorga una sensibilidad térmica inferior a 0.1 °C por paso en la vecindad de los umbrales nominales de operación (entre 20 °C y 60 °C). Esta resolución es fundamental para evitar oscilaciones espurias o lecturas inestables que pudiesen gatillar conmutaciones erróneas en las tareas de control térmico.
+* **Tiempo de Muestreo (Sampling Time):** Configurado a través de los registros internos para asegurar un tiempo de adquisición de carga adecuado en el capacitor interno de muestreo y retención (*Sample and Hold*), mitigando los efectos de la impedancia de salida del divisor de tensión resistivo de 10 kΩ.
+
+### 3.2. Modulación por Ancho de Pulsos (PWM - Pin PB0 / TIM3_CH3)
+* **Mapeo físico:** Pin `PB0` mapeado internamente mediante la función alternativa de hardware `AF2` al Temporizador General de 16 bits `TIM3`, operando de manera nativa en el Canal 3 (`TIM3_CH3`).
+* **Frecuencia del PWM de Trabajo:** **25 kHz**.
+* **Justificación de Conveniencia Técnica:** La frecuencia de 25 kHz ha sido seleccionada de forma deliberada por cumplir rigurosamente con dos estándares fundamentales en la ingeniería de control de climatización:
+    1.  **Inaudibilidad Acústica:** El espectro de audición humana comprende típicamente frecuencias entre 20 Hz y 20 kHz. Si el ventilador fuese conmutado a frecuencias inferiores (por ejemplo, 1 kHz o 5 kHz), los bobinados internos del motor actuarían como transductores mecánicos induciendo un zumbido o pitido acústico constante de alta molestia operacional. Con 25 kHz, la conmutación se eleva por completo fuera del espectro audible humano.
+    2.  **Estándar de Ventiladores Brushless de CC:** Sigue las directrices estándar de la industria electrónica para el control por velocidad de motores de CC sin escobillas, reduciendo drásticamente las pérdidas térmicas por conmutación en el núcleo del estator.
+* **Resolución del Ciclo de Trabajo (Duty Cycle) y Perfiles Operacionales:** El firmware gestiona los perfiles de enfriamiento mediante pasos discretos definidos explícitamente en función de la clasificación del nivel térmico:
+    * **Nivel COLD:** Duty cycle del **40%**. Provee una ventilación mínima de renovación de aire sin comprometer la eficiencia energética.
+    * **Nivel LOW:** Duty cycle del **60%**. Flujo moderado para control térmico pasivo inicial.
+    * **Nivel MEDIUM:** Duty cycle del **80%**. Incremento activo del flujo de aire ante cargas de calor evidentes.
+    * **Nivel HIGH:** Duty cycle del **100%**. Capacidad máxima de disipación mecánica.
+    * **Nivel CRITICAL:** Duty cycle del **100%**. Forzado eléctrico continuo a velocidad máxima.
+
+### 3.3. Interfaz Periférica Serial (SPI1 - Pines PA5, PA6, PA7)
+* **Mapeo físico:**
+    * `PA5` -> `SPI1_SCK` (Línea de Reloj Serie).
+    * `PA7` -> `SPI1_MOSI` (Línea de Salida de Datos del Maestro).
+    * `PA6` -> Configurado como salida GPIO de propósito general, utilizada manualmente para controlar la línea de almacenamiento **RCLK / LATCH** del 74HC595N.
+* **Configuración del Protocolo:** Opera en Modo SPI 0 (Polaridad de Reloj CPOL = 0, Fase de Reloj CPHA = 0).
+* **Justificación de Conveniencia Técnica:** El uso de un bloque SPI por hardware dedicado elimina la sobrecarga de tiempo de ejecución de CPU que implicaría realizar una transmisión por manipulación directa de software (*Bit-Banging*). Además, optimiza masivamente la densidad de conexiones de la placa de desarrollo: controlar 8 canales independientes de LEDs requeriría de 8 pines GPIO individuales; con esta arquitectura de registro de desplazamiento SPI, se controla el mismo volumen de señales visuales empleando estrictamente **solo 3 pines lógicos**.
+
+### 3.4. Interfaz Inter-Integrated Circuit (I2C3 - Pines PC0, PC1)
+* **Mapeo físico:** `PC0` (SCL) y `PC1` (SDA) mediante función alternativa `AF4`.
+* **Frecuencia del Bus:** Configurado en Modo Estándar (*Standard Mode*) a **100 kHz**.
+* **Justificación de Conveniencia Técnica:** El uso del periférico físico I2C3 integrado maneja por hardware la generación de condiciones de inicio, detención, arbitraje y bits de reconocimiento. La frecuencia de 100 kHz es óptima para mantener una excelente integridad de señal en buses locales alambrados en protoboard, mitigando los acoplamientos capacitivos parásitos entre las líneas sin comprometer la tasa de refresco visual requerida por el framebuffer (CFB) de Zephyr OS.
+
+---
+
+## 4. Mapa de Distribución de Pines (Pinout Consolidado)
+
+Para asegurar la coherencia absoluta entre el cableado físico y las asignaciones lógicas del firmware, se consolida la siguiente matriz de interconexión basada en las declaraciones explícitas del archivo Devicetree:
+
+| Pin STM32L476RG | Función del Periférico | Nodo Zephyr | Componente Destino Hardware Externo               |
+| :-------------- | :--------------------- | :---------- | :------------------------------------------------ |
+| **PA0**         | ADC1_IN5 (Analógico)   | `&adc1`     | Nodo central Divisor de Tensión (Sonda NTC 10 kΩ) |
+| **PB0**         | TIM3_CH3 (PWM, AF2)    | `&pwm3`     | Entrada lógica del aislamiento optoacoplado       |
+| **PA5**         | SPI1_SCK (Clock)       | `&spi1`     | Pin 11 (SRCLK / Clock In) del Registro SN74HC595N |
+| **PA7**         | SPI1_MOSI (Master Out) | `&spi1`     | Pin 14 (SER / Data In) del Registro SN74HC595N    |
+| **PA6**         | GPIO_OUTPUT (Limpio)   | `GPIO`      | Pin 12 (RCLK / Latch de Salida) del Registro      |
+| **PC0**         | I2C3_SCL (Clock, AF4)  | `&i2c3`     | Pin SCL de Pantalla OLED SSD1306                  |
+| **PC1**         | I2C3_SDA (Datos, AF4)  | `&i2c3`     | Pin SDA de Pantalla OLED SSD1306                  |
+| **PA4**         | GPIO_OUTPUT            | `GPIO`      | Keep-Alive de Planta de Calor Externa             |
+| **PC13**        | GPIO_INPUT (EXTI)      | `ISR`       | Botón de Usuario (B1 de placa Nucleo)             |
+| **PC7**         | GPIO_INPUT (Pull-Up)   | `Driver`    | Fila 0 (R0) del Teclado Matricial                 |
+| **PA9**         | GPIO_INPUT (Pull-Up)   | `Driver`    | Fila 1 (R1) del Teclado Matricial                 |
+| **PA8**         | GPIO_INPUT (Pull-Up)   | `Driver`    | Fila 2 (R2) del Teclado Matricial                 |
+| **PB10**        | GPIO_INPUT (Pull-Up)   | `Driver`    | Fila 3 (R3) del Teclado Matricial                 |
+| **PB4**         | GPIO_OUTPUT            | `Driver`    | Columna 0 (C0) del Teclado Matricial              |
+| **PB5**         | GPIO_OUTPUT            | `Driver`    | Columna 1 (C1) del Teclado Matricial              |
+| **PB3**         | GPIO_OUTPUT            | `Driver`    | Columna 2 (C2) del Teclado Matricial              |
+| **PA10**        | GPIO_OUTPUT            | `Driver`    | Columna 3 (C3) del Teclado Matricial              |
+| **PC10**        | USART3_TX (UART)       | `&usart3`   | RX bloque de telemetría ESP32                     |
+| **PC11**        | USART3_RX (UART)       | `&usart3`   | TX bloque de telemetría ESP32                     |

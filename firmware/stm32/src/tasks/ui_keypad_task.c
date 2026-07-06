@@ -175,12 +175,20 @@ static void render_monitor(void)
 	display_print(line, 0, 0);
 
 	/* Fila 1: Lvl (Max 12 chars: "Lvl: SOBRET") */
+	static const char *threshold_names[] = { "COLD", "LOW", "MEDIUM", "HIGH", "CRITIC" };
+
 	if (ctrl.current_threshold_code == THRESHOLD_CRITICAL) {
-		const char *cause_text = (ctrl.critical_cause == CRITICAL_CAUSE_SENSOR_FAULT)
-					  ? "Lvl: FALLA" : "Lvl: SOBRET";
-		display_print(cause_text, 0, 16);
+		if (ctrl.critical_cause == CRITICAL_CAUSE_SENSOR_FAULT) {
+			display_print("Lvl: S.FAULT", 0, 16);
+		} else if (ctrl.keep_alive_revoked) { 
+			/* Pasaron los 20 segundos de gracia: Escalada a OVERTMP */
+			display_print("Lvl: OVERTMP", 0, 16);
+		} else {
+			/* Acaba de cruzar el umbral, aún está en los 20s de gracia */
+			display_print("Lvl: CRITIC", 0, 16);
+		}
 	} else {
-		static const char *threshold_names[] = { "FRIO", "BAJO", "MED", "ALTO" };
+		/* Niveles normales: COLD, LOW, MEDIUM, HIGH */
 		snprintf(line, sizeof(line), "Lvl: %s", threshold_names[ctrl.current_threshold_code]);
 		display_print(line, 0, 16);
 	}

@@ -1,117 +1,80 @@
-# 02 — Arquitectura del Firmware
+# 02-FIRMWARE-ARCHITECTURE
+## Arquitectura de Software y Multihilo (Zephyr RTOS)
 
-## 1. Arquitectura general
+Este documento describe la arquitectura interna del firmware, el modelo de concurrencia basado en el sistema operativo en tiempo real (RTOS) Zephyr, la asignación de prioridades y el manejo seguro de la memoria compartida entre los distintos hilos de ejecución.
 
-El firmware sigue un modelo de **concurrencia por hilos con estado
-compartido protegido por mutex**, nativo de Zephyr OS. No hay un
-"orquestador" central: cada responsabilidad vive en su propio hilo,
-registrado de forma estática con `K_THREAD_DEFINE()` directamente en su
-archivo `.c` dentro de `src/tasks/`. `main.c` únicamente inicializa las
-estructuras de estado compartido antes de que los hilos empiecen a
-ejecutarse — ver `src/main.c` para el detalle, ya está bien documentado ahí.
+---
 
-```
-src/
-├── state/      Datos compartidos entre hilos, cada uno con su propio mutex.
-├── drivers/    Acceso directo a hardware. Sin lógica de negocio, sin conocer
-│               qué significa cada valor — solo "leer/escribir el pin/bus X".
-├── protocol/   Formato de datos para comunicación (construcción/parseo de
-│               tramas), independiente de qué hilo las use.
-└── tasks/      Un hilo Zephyr por archivo. Aquí vive toda la lógica de
-                negocio: "qué hacer" con los datos de state/ y drivers/.
-```
+## 1. Paradigma del Sistema Operativo
 
-Esta separación existe para que cada capa se pueda razonar (y probar) por
-separado: un driver no sabe qué threshold_code significa, un estado no sabe
-quién lo lee, y una tarea no sabe cómo funciona el bus SPI por debajo del
-driver del registro de desplazamiento.
+El sistema está construido sobre **Zephyr OS**, utilizando su planificador de tareas preventivo (*preemptive scheduler*). Esto garantiza que las tareas de misión crítica (como la evaluación térmica y el control del hardware) siempre tengan preferencia de ejecución por encima de las tareas secundarias (como la actualización de la pantalla o la telemetría visual), asegurando tiempos de respuesta deterministas.
 
-## 2. Hilos de Zephyr
+### Características implementadas del kernel:
+* **Multihilo Preventivo:** Las interrupciones y los hilos de mayor prioridad pueden suspender instantáneamente a los hilos de menor prioridad.
+* **Protección de Memoria Compartida:** Uso estricto de Mutexes (`k_mutex`) para evitar condiciones de carrera (*race conditions*) al acceder a variables globales.
+* **Manejo de Interrupciones (ISR):** Delegación del procesamiento pesado desde las rutinas de interrupción hacia los hilos, manteniendo las ISR lo más cortas posible.
 
-| Hilo | Archivo | Prioridad | Responsabilidad |
-|---|---|---|---|
-| `temperature_manager` | `tasks/temperature_manager.c` | 2 (alta) | Lee el NTC, filtra, publica en `ControlState`, detecta falla de sensor |
-| `cooling_manager` | `tasks/cooling_manager.c` | 2 (alta) | Clasifica el nivel térmico (con histéresis), controla el PWM, gestiona la entrada/salida de CRÍTICO |
-| `power_status_manager` | `tasks/power_status_manager.c` | 2 (alta) | ISR + debounce del botón físico, detecta pulsación larga (shutdown) |
-| `led_representation_manager` | `tasks/led_representation_manager.c` | 4 (media) | Traduce el estado del sistema a los 8 bits del registro de desplazamiento |
-| `ui_keypad_task` | `tasks/ui_keypad_task.c` | 4 (media) | OLED + teclado matricial: monitoreo y edición de umbrales |
-| `heater_simulation_task` | `tasks/heater_simulation_task.c` | 6 (baja) | Simula la fuente de calor externa vía el GPIO keep-alive |
-| `esp32_comm_manager` | `tasks/esp32_comm_manager.c` | 6 (baja) | Telemetría, heartbeat, detección de desconexión con el ESP32 |
+---
 
-Prioridades más bajas = número más alto en Zephyr (`THREAD_PRIORITY`). Las
-tareas de lazo de control (temperatura, ventilador, botón de apagado) tienen
-prioridad alta porque su latencia afecta directamente la seguridad del
-sistema; las de interfaz/comunicación tienen prioridad baja porque un
-retraso de milisegundos ahí es imperceptible para una persona o para un
-enlace serie de baja velocidad.
+## 2. Mapa de Hilos de Ejecución (Threads)
 
-## 3. Timers y periodos
+El sistema se divide en módulos funcionales independientes que se ejecutan como hilos concurrentes. A continuación, se detalla la configuración del planificador para cada uno.
 
-| Hilo | Periodo de ciclo | Notas |
-|---|---|---|
-| `temperature_manager` | 500ms | Filtro de promedio móvil sobre 5 muestras |
-| `cooling_manager` | 1000ms | Incluye el conteo del temporizador de 20s en CRÍTICO-sobretemperatura |
-| `led_representation_manager` | 50ms | Resolución suficiente para blinks de 200/500/1000ms |
-| `ui_keypad_task` | 20ms | Escaneo de teclado a 50Hz; timeout de edición a 30s |
-| `esp32_comm_manager` | 20ms (bucle TX/RX combinado) | Telemetría cada 2s o por salto de 0.5°C; heartbeat cada 5s; timeout de enlace 12s |
-| `heater_simulation_task` | 500ms (periodo del pulso) | Pulso de 200ms ON / 300ms OFF cuando autorizado |
+*(Nota: En Zephyr, los números de prioridad menores indican mayor urgencia lógica en la ejecución).*
 
-## 4. Mutexes y orden de adquisición
+| Hilo / Módulo       | Archivo Fuente                 | Prioridad          | Tamaño de Pila (Stack) | Responsabilidad Principal                                    |
+| :------------------ | :----------------------------- | :----------------- | :--------------------- | :----------------------------------------------------------- |
+| **Temp Manager** | `temperature_manager.c` | **Alta (2)** | 1024 Bytes | Muestreo periódico del canal ADC1 (PA0) para leer la sonda NTC. Aplica la ecuación de conversión a grados Celsius y actualiza continuamente el valor en tiempo real dentro del `ControlState`. |
+| **Cooling Manager** | `cooling_manager.c`            | **Alta (2)**       | 1024 Bytes             | Lectura de temperatura, evaluación de umbrales con histéresis, ajuste del ciclo de trabajo del PWM del ventilador y gestión del temporizador de 20 segundos para escalada a OVERTMP. |
+| **Power Status**    | `power_status_manager.c`       | **Alta (2)**       | 1024 Bytes             | Gestión del botón de usuario (PC13) vía ISR, implementación de *debounce* por software, y orquestación del apagado seguro (*Shutdown*) o transiciones al modo de configuración. |
+| **UI & Keypad**     | `ui_keypad_task.c`             | **Media (4)**      | 2048 Bytes             | Barrido del teclado matricial 4x4 cada 20 ms. Renderizado del Framebuffer (CFB) en la pantalla OLED I2C. Requiere más pila debido a las operaciones del búfer de video. |
+| **LED Manager**     | `led_representation_manager.c` | **Media (4)** | 1024 Bytes             | Transmisión por SPI hacia el registro de desplazamiento 74HC595N para actualizar la barra térmica visual y los LEDs de diagnóstico de hardware sin bloquear la CPU. |
+| **Heater Sim**      | `heater_simulation_task.c`     | **Baja (6)**       | 1024 Bytes             | Simulación de la planta de calor (control del pin PA4 / *Keep-Alive*). Cede su ejecución frente a cualquier otro proceso del sistema. |
 
-Cada una de las 5 estructuras de `state/` tiene su propio mutex privado
-(`static struct k_mutex`, no expuesto fuera del archivo — ver cualquier
-`*_state.c` para el patrón). Ningún hilo mantiene dos mutex tomados a la vez
-en este diseño: todo acceso es "tomar mutex → copiar/escribir → soltar
-mutex" en una sola función `_get()`/`_set_*()`, nunca se retiene un mutex
-mientras se hace otra llamada de estado. Por eso no hay un orden de
-adquisición complejo que documentar más allá de una regla: **si alguna vez
-un hilo necesita tocar `SystemState` junto con otro estado en la misma
-operación, `sys_mutex` se adquiere al final** (ya anotado en
-`system_state.h`) — es la única estructura con esa restricción, porque es la
-que más hilos consultan y la que menos cambia, así que minimizar el tiempo
-que se mantiene tomada reduce el riesgo de contención.
+---
 
-## 5. Eventos (banderas de una sola escritura)
+## 3. Gestión de Estados Compartidos (Arquitectura de Datos)
 
-Además de los 5 estados con mutex, hay dos mecanismos de señalización más
-livianos para comunicación entre hilos que no necesita un snapshot completo
-de una estructura, solo un booleano:
+Para evitar un acoplamiento fuerte y código espagueti, los hilos no se comunican directamente ni modifican las variables internas de otros módulos de forma descontrolada. El sistema utiliza un patrón de **Estructuras de Estado Globales Protegidas**. 
 
-- `heater_simulation_set_authorized(bool)` — `cooling_manager` revoca/restaura
-  la autorización del keep-alive sin tocar el GPIO directamente.
-- `esp32_comm_manager_notify_config_changed(void)` — `ui_keypad_task` avisa
-  que hay una configuración nueva para reenviar de inmediato.
+Cada estructura cuenta con sus propios métodos de acceso (`getters` y `setters`) que encapsulan bloqueos mutuos (`k_mutex_lock` / `k_mutex_unlock`) para garantizar la integridad de los datos.
 
-Ambos usan una variable `static volatile bool` de archivo, sin mutex propio,
-documentado explícitamente en cada sitio como aceptable porque es una
-escritura atómica de un solo booleano donde un ciclo de retraso en el peor
-caso no tiene consecuencias.
+### 3.1. `SystemState`
+* **Contenido:** Estado general del equipo (`system_enabled`), banderas de modo seguro o apagado inminente.
+* **Productores:** `power_status_manager` (al detectar pulsaciones del botón).
+* **Consumidores:** Todos los hilos (para saber si deben ejecutar su lógica o mantenerse en reposo).
 
-## 6. Comunicación UART (hacia el ESP32)
+### 3.2. `ControlState`
+* **Contenido:** Datos dinámicos en tiempo real (Temperatura actual, código del umbral activo `current_threshold_code`, causa del estado crítico `critical_cause`, y bandera de revocación `keep_alive_revoked`).
+* **Productores:** `cooling_manager` (escribe la evaluación térmica).
+* **Consumidores:** `ui_keypad_task` (para mostrar los datos en pantalla) y `led_representation_manager` (para actualizar telemetría visual).
 
-Ver `protocol/uart_packet.h` para el formato de trama completo y
-`tasks/esp32_comm_manager.c` para la lógica de heartbeat/detección de
-desconexión — ambos archivos están comentados en detalle, este documento no
-repite esa información. En resumen: un solo hilo hace TX y RX de forma no
-bloqueante sobre USART3, sin necesidad de un segundo hilo dedicado a
-recepción, porque las tasas de datos de esta aplicación (un paquete cada
-200ms como mucho) no lo justifican.
+### 3.3. `ConfigState`
+* **Contenido:** Parámetros configurables en RAM de los 4 umbrales de temperatura (`threshold_low`, `threshold_medium`, `threshold_high`, `threshold_critical`).
+* **Productores:** `ui_keypad_task` (durante el modo edición por teclado).
+* **Consumidores:** `cooling_manager` (para comparar la temperatura actual contra los límites definidos).
 
-## 7. Watchdog
+### 3.4. `TelemetryState`
+* **Contenido:** Contadores estadísticos y banderas de diagnóstico de hardware (ej. falla I2C, falla de sonda NTC).
+* **Productores:** Rutinas de inicialización de los drivers.
+* **Consumidores:** Telemetría serial (USART3) y `led_representation_manager`.
 
-**No implementado todavía.** `prj.conf` tiene `CONFIG_WATCHDOG=y` habilitado
-pero ningún hilo lo alimenta (`wdt_feed()`) ni lo configura
-(`wdt_install_timeout()`). Es un punto pendiente real, no solo un TODO
-decorativo — sin esto, un hilo colgado (por ejemplo si el bus I2C se cuelga
-esperando un ACK que nunca llega) no tiene ningún mecanismo de recuperación
-automática a nivel de sistema. Ver `04-design-decisions.md` Sección de
-mejoras futuras.
+---
 
-## 8. Organización modular — regla de dependencia
+## 4. Lógica de Control Temporal y Excepciones
 
-`drivers/` no incluye nada de `state/` ni de `tasks/`. `state/` no incluye
-nada de `tasks/`. `tasks/` puede incluir de `state/`, `drivers/` y
-`protocol/`. Esta dirección única de dependencias es lo que permite que, por
-ejemplo, `shift_register.c` se pueda reutilizar sin arrastrar ningún
-conocimiento sobre qué representa cada LED — esa lógica vive exclusivamente
-en `led_representation_manager.c`.
+### 4.1. Máquina de Estados Térmica (Histéresis)
+Para evitar que el hardware oscile destructivamente cuando la temperatura fluctúa marginalmente en el borde de un umbral, el `cooling_manager` implementa una histéresis asimétrica:
+* **Escalada (Subida):** Es inmediata. Si la temperatura cruza un umbral superior, el sistema transita al instante para garantizar la disipación.
+* **Desescalada (Bajada):** Requiere un margen de seguridad predefinido (ej. 2.0 °C). El sistema no bajará el ciclo de trabajo de la ventilación hasta que la temperatura descienda consistentemente por debajo del margen.
+
+### 4.2. Temporizador de Tolerancia Critica (Keep-Alive Revocation)
+El sistema integra una medida de alta fiabilidad (*failsafe*) para el hardware acoplado:
+1. Al entrar en nivel `CRITICAL` por sobretemperatura, se activa un conteo interno.
+2. Si el conteo supera los **20,000 ms (20 segundos)** sin que la temperatura baje del umbral crítico (verificado por la histéresis), el sistema deduce que la ventilación forzada es insuficiente.
+3. Se invoca una revocación lógica, obligando al módulo `heater_simulation_task` a desactivar inmediatamente la línea *Keep-Alive* (Pin PA4) que alimenta la planta externa.
+4. El estado escala visualmente en la OLED (`CRITIC` a `OVERTMP`) y activa un patrón de sirena en los indicadores LED.
+
+### 4.3. Rutina de Antirrebote (Debounce) Híbrida
+* **Botón de Usuario (PC13):** Utiliza interrupciones por flanco (EXTI) para respuesta inmediata, pero delega el cálculo del tiempo de retención (corta, media, larga) a un bucle temporal dentro del hilo `power_status_manager`, liberando el hardware de interrupciones.
+* **Teclado Matricial (Matriz 4x4):** Operado completamente por barrido de software (*polling*) dentro de `ui_keypad_task`. Se escanean las columnas (activas en bajo) y se leen las filas protegidas por resistencias *Pull-Up*, aplicando memoria de estado para ignorar oscilaciones mecánicas del contacto.

@@ -146,12 +146,19 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 			}
 			break;
 		case THRESHOLD_CRITICAL:
-			/* Aquí solo puede ser causa OVERTEMP (SENSOR_FAULT ya se
-			 * manejó arriba) — Qe/Qf/Qg quedan congelados en fijo y
-			 * Qh parpadea para señalar específicamente esta causa. */
-			frame |= BIT_QE | BIT_QF | BIT_QG;
-			if (blink_phase(tick, 500)) {
-				frame |= BIT_QH;
+			if (ctrl->keep_alive_revoked) {
+				/* ESTADO ESCALADO (OVERTMP, >20s): Efecto baliza entre barra térmica y Qh */
+				if (blink_phase(tick, 500)) {
+					frame |= BIT_QE | BIT_QF | BIT_QG; /* Barra encendida, Qh apagado */
+				} else {
+					frame |= BIT_QH; /* Barra apagada, Qh encendido */
+				}
+			} else {
+				/* ESTADO INICIAL (CRITIC, <20s): Barra fija, Qh parpadeando como advertencia */
+				frame |= BIT_QE | BIT_QF | BIT_QG;
+				if (blink_phase(tick, 500)) {
+					frame |= BIT_QH;
+				}
 			}
 			break;
 		}
