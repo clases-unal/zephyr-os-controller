@@ -1,23 +1,28 @@
+/**
+ * @file heater_simulation_task.h
+ * @brief Interfaz para el hilo de simulación de fuente de calor.
+ */
+
 #ifndef HEATER_SIMULATION_TASK_H
 #define HEATER_SIMULATION_TASK_H
 
 #include <stdbool.h>
 
+/**
+ * @brief Inicializa la configuración del pin GPIO utilizado para simular calor.
+ */
 void heater_simulation_task_init(void);
 
-/*
- * Autoriza o revoca la línea keep-alive (PA4) hacia la planta térmica externa.
+/**
+ * @brief Autoriza o revoca la línea keep-alive (PA4) hacia la planta térmica externa.
+ *
  * Pensada para que cooling_manager pueda cortar la autorización cuando el
  * sistema permanece en CRITICAL por sobretemperatura más allá del tiempo de
- * tolerancia (ver checkpoint.md Sección 3.3 / discussion.md §9.1.3), sin que
- * ningún otro módulo tenga que tocar el GPIO directamente — la propiedad del
- * pin se queda dentro de este archivo, igual que el resto del proyecto separa
- * "quién decide" de "quién controla el hardware físico".
+ * tolerancia, sin que ningún otro módulo tenga que tocar el GPIO directamente.
  *
- * true  = autorizado (comportamiento normal, sujeto igualmente a system_enabled)
- * false = revocado — el pin se mantiene en LOW sin importar el resto de la
- *         lógica, hasta que se vuelva a llamar con true.
+ * @param authorized true = autorizado (sujeto igualmente a system_enabled).
+ * false = revocado (pin se mantiene en LOW hasta ser reautorizado).
  */
 void heater_simulation_set_authorized(bool authorized);
 
-#endif
+#endif /* HEATER_SIMULATION_TASK_H */

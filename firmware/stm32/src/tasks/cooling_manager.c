@@ -1,37 +1,27 @@
-/*
- * cooling_manager.c — Hilo de decisión térmica y control de ventilador.
+/**
+ * @file cooling_manager.c
+ * @brief Hilo de decisión térmica y control de ventilador.
  *
  * Qué hace:
  * - Lee la temperatura actual desde ControlState.
  * - Clasifica esa temperatura en uno de 5 niveles (COLD/LOW/MEDIUM/HIGH/CRITICAL)
- *   contra los 4 umbrales configurables en ConfigState, aplicando histéresis
- *   asimétrica (discussion.md §4.2: subir es inmediato, bajar requiere cruzar
- *   umbral - 2°C).
+ * contra los 4 umbrales configurables en ConfigState, aplicando histéresis
+ * asimétrica (subir es inmediato, bajar requiere cruzar umbral - 2°C).
  * - Detecta la entrada a CRITICAL por dos causas independientes: sobretemperatura
- *   (temperature >= threshold_critical) o falla de sensor NTC (bandera de
- *   TelemetryState). Ver checkpoint.md Sección 3 para el diseño completo.
+ * o falla de sensor NTC.
  * - Mientras CRITICAL-por-sobretemperatura se sostiene más de 20s sin que la
- *   temperatura baje lo suficiente, revoca la autorización de la planta externa
- *   (línea keep-alive) como medida de seguridad adicional — resuelve el punto
- *   pendiente de discussion.md §9.1.3.
+ * temperatura baje, revoca la autorización de la planta externa (línea keep-alive)
+ * como medida de seguridad adicional.
  * - Convierte el nivel térmico activo en un duty cycle y lo aplica al ventilador.
  * - En caso de fallo del sensor NTC, entra en failsafe y fuerza el ventilador a
- *   máxima velocidad.
- *
- * NOTA DE ARQUITECTURA: discussion.md §5.3 ubica la clasificación de umbrales
- * dentro de Temperature Manager, no aquí. El código ya traía esta lógica en
- * Cooling Manager desde antes de esta sesión de cambios y esa parte ya
- * funcionaba, así que se extendió en el mismo lugar para no arriesgar lo que
- * ya estaba probado — queda anotado como desviación consciente respecto al
- * documento de arquitectura, a reconciliar en docs/02-firmware-architecture.md.
+ * máxima velocidad.
  *
  * Qué recibe / qué entrega:
  * - Recibe la temperatura medida y la configuración de umbrales desde los
- *   estados compartidos.
+ * estados compartidos.
  * - Entrega el umbral activo, la causa de CRITICAL (si aplica) y el duty cycle
- *   a ControlState para que otros módulos (LEDs, OLED, telemetría) lo reflejen.
- * - Entrega la señal de PWM al ventilador real y, cuando corresponde, revoca el
- *   keep-alive de la planta externa a través de heater_simulation_task.
+ * a ControlState.
+ * - Entrega la señal de PWM al ventilador real y revoca el keep-alive si es necesario.
  */
 
 #include <zephyr/kernel.h>
@@ -47,30 +37,30 @@
 LOG_MODULE_REGISTER(cooling_manager, LOG_LEVEL_INF);
 
 #define STACK_SIZE 1024
-#define THREAD_PRIORITY 2       /* Alta prioridad — ver docs/02-firmware-architecture.md */
+#define THREAD_PRIORITY 2       /* Alta prioridad */
 #define PERIOD_MS 1000
 
-/* Mapeo umbral -> duty cycle (%). TODO: ajustar estos valores contra el
- * comportamiento esperado real (discussion.md no fija porcentajes exactos
- * salvo la tabla conceptual 0/30/60/100 de la Sección 3.1 — aquí se usan
- * valores ya presentes en el código previo a esta sesión, sin tocarlos). */
+/* Mapeo umbral -> duty cycle (%). */
 #define DUTY_COLD    40
 #define DUTY_LOW     60
 #define DUTY_MEDIUM  80
 #define DUTY_HIGH   100
 #define DUTY_CRITICAL 100
 
-/* Margen de histéresis fijo, igual para los 4 umbrales (discussion.md §4.2). */
+/* Margen de histéresis fijo, igual para los 4 umbrales. */
 #define HYSTERESIS_MARGIN_C 2.0f
 
 /* Tiempo máximo tolerado en CRITICAL-por-sobretemperatura antes de revocar el
- * keep-alive de la planta externa. Valor corto a propósito para que sea
- * observable en una demostración en vivo, siguiendo el mismo criterio que el
- * temporizador de estabilidad del NTC (15s) — ver checkpoint.md Sección 3.3. */
+ * keep-alive de la planta externa. */
 #define CRITICAL_OVERTEMP_TIMEOUT_MS 20000
 
 static const struct pwm_dt_spec fan_pwm = PWM_DT_SPEC_GET(DT_PATH(zephyr_user));
 
+/**
+ * @brief Inicializa el hardware necesario para el control de refrigeración.
+ *
+ * @return true si el periférico PWM especificado en el DeviceTree está listo, false de lo contrario.
+ */
 bool cooling_manager_init(void)
 {
 	if (!pwm_is_ready_dt(&fan_pwm)) {
@@ -80,15 +70,18 @@ bool cooling_manager_init(void)
 	return true;
 }
 
-/*
- * Evaluador genérico de histéresis: reemplaza tener 4 bloques if/else casi
- * idénticos (uno por umbral) por una sola tabla ordenada que se recorre una
- * vez. Para cada umbral, si el estado ACTUAL ya está en ese nivel o por
- * encima, el umbral efectivo para permanecer ahí baja en HYSTERESIS_MARGIN_C
- * (hace falta enfriarse más para bajar). Si el estado actual está por debajo,
- * el umbral efectivo es el exacto (subir es inmediato al cruzarlo). Esto
- * implementa exactamente la regla asimétrica de discussion.md §4.2 para los
- * 4 umbrales a la vez, sin duplicar la lógica por cada uno.
+/**
+ * @brief Clasifica la temperatura actual en un nivel térmico aplicando histéresis.
+ *
+ * Evaluador genérico que recorre una tabla ordenada de umbrales. Si el estado
+ * actual ya está en un nivel o por encima, el umbral efectivo para permanecer
+ * ahí baja según HYSTERESIS_MARGIN_C (requiere enfriarse más para bajar de nivel).
+ * Si está por debajo, el umbral efectivo es exacto (subir es inmediato).
+ *
+ * @param temperature Temperatura actual medida en grados Celsius.
+ * @param current_state El nivel térmico (umbral) en el que se encontraba el sistema en el ciclo anterior.
+ * @param cfg Puntero a la configuración actual del sistema (que contiene los valores de los umbrales).
+ * @return El nuevo nivel térmico (threshold_code_t) evaluado.
  */
 static threshold_code_t classify_with_hysteresis(float temperature,
 						  threshold_code_t current_state,
@@ -123,6 +116,12 @@ static threshold_code_t classify_with_hysteresis(float temperature,
 	return new_state;
 }
 
+/**
+ * @brief Convierte un nivel térmico en un ciclo de trabajo (duty cycle) para el PWM.
+ *
+ * @param code Nivel térmico evaluado (threshold_code_t).
+ * @return Porcentaje de duty cycle (0-100) correspondiente al nivel.
+ */
 static uint8_t duty_for_threshold(threshold_code_t code)
 {
 	switch (code) {
@@ -135,6 +134,11 @@ static uint8_t duty_for_threshold(threshold_code_t code)
 	}
 }
 
+/**
+ * @brief Aplica un duty cycle en porcentaje al periférico PWM del ventilador.
+ *
+ * @param duty_percent Ciclo de trabajo deseado (0 a 100).
+ */
 static void apply_duty_cycle(uint8_t duty_percent)
 {
 	uint32_t pulse_ns = (fan_pwm.period * duty_percent) / 100;
@@ -145,6 +149,21 @@ static void apply_duty_cycle(uint8_t duty_percent)
 	}
 }
 
+/**
+ * @brief Hilo principal del gestor de refrigeración.
+ *
+ * Se ejecuta periódicamente y se encarga de:
+ * 1. Obtener estados de control, configuración y telemetría.
+ * 2. Determinar si el sensor NTC está en falla. Si es así, aplica el modo failsafe.
+ * 3. Si el sensor está bien, clasifica la temperatura y determina la causa.
+ * 4. Controla un temporizador para revocar el keep-alive si la temperatura crítica
+ * se sostiene por mucho tiempo.
+ * 5. Actualiza los estados y aplica el PWM al ventilador.
+ *
+ * @param p1 Parámetro no usado (requerido por la firma de hilos de Zephyr).
+ * @param p2 Parámetro no usado.
+ * @param p3 Parámetro no usado.
+ */
 static void cooling_manager_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);

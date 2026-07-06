@@ -1,9 +1,11 @@
-/*
- * ntc_sensor.h — Driver de lectura del termistor NTC vía ADC + ecuación Beta
+/**
+ * @file ntc_sensor.h
+ * @brief Driver de lectura del termistor NTC vía ADC empleando la ecuación Beta.
  *
- * NTC: 10kΩ @25°C, B25/50 = 3470K ±1% (00-project-decisions-and-procedure.md DEC-H-003)
- * Resistencia fija del divisor: 10kΩ
- * Pin: PA0 (ADC1, canal 5) — ver zephyr/boards/nucleo_l476rg.overlay
+ * Especificaciones de hardware asumidas:
+ * NTC: 10kΩ @25°C, B25/50 = 3470K ±1%.
+ * Resistencia fija del divisor: 10kΩ.
+ * Pin asignado: PA0 (ADC1, canal 5) — verificar zephyr/boards/nucleo_l476rg.overlay
  */
 
 #ifndef NTC_SENSOR_H
@@ -11,16 +13,25 @@
 
 #include <stdbool.h>
 
-/*
- * Inicializa el canal ADC (debe llamarse una vez antes del primer read).
- * Retorna false si el dispositivo ADC no está listo (overlay mal aplicado).
+/**
+ * @brief Inicializa el canal analógico a digital (ADC) para el termistor.
+ *
+ * Debe llamarse una vez antes del primer intento de lectura (read).
+ *
+ * @return true si el dispositivo ADC se inicializó de acuerdo al overlay. false
+ * si el periférico no se encuentra listo.
  */
 bool ntc_sensor_init(void);
 
-/*
- * Lee el ADC, convierte a resistencia y aplica la ecuación Beta para obtener
- * temperatura en °C. Retorna false si la lectura está fuera del rango físico
- * esperado (sensor en corto o cable abierto — discussion.md Sección 3.1).
+/**
+ * @brief Obtiene una lectura de la temperatura actual en grados Celsius.
+ *
+ * Efectúa el muestreo del ADC, halla la resistencia del divisor de tensión
+ * y luego aplica la ecuación Beta térmica.
+ *
+ * @param out_temperature Puntero de salida en el que se almacenará el valor en °C.
+ * @return true si la lectura fue exitosa. false si se detectó un valor anormal,
+ * lo cual típicamente señala un problema físico (cable abierto o corto eléctrico).
  */
 bool ntc_sensor_read_celsius(float *out_temperature);
 

@@ -1,30 +1,21 @@
-/*
- * led_representation_manager.c — Hilo visualizador del estado del sistema.
+/**
+ * @file led_representation_manager.c
+ * @brief Hilo visualizador del estado general del sistema vía LEDs.
  *
+ * @details
  * Diseño vigente (single-register): un único SN74HC595N con 8 salidas Qa-Qh,
- * cada una con un significado fijo. Ver checkpoint.md Sección 2 para la tabla
- * completa y la justificación de cada decisión — este archivo es la
- * implementación directa de esa tabla, no repito aquí toda la justificación.
+ * cada una con un significado fijo:
+ * Bit 0 (Qa) — Blanco:   Heartbeat del kernel, parpadeo constante 1000ms.
+ * Bit 1 (Qb) — Azul 1:   Salud de teclado+OLED. Fijo=OK, parpadeo 500ms=falla.
+ * Bit 2 (Qc) — Azul 2:   Salud del enlace ESP32. Fijo=OK, parpadeo 500ms=falla.
+ * Bit 3 (Qd) — Rojo 1:   SHUTDOWN (500ms) o Alarma Permanente (200ms).
+ * Bit 4 (Qe) — Verde:    Barra térmica — parpadeo 500ms=COLD, fijo=LOW o superior.
+ * Bit 5 (Qf) — Amarillo: Barra térmica — fijo=MEDIO o superior.
+ * Bit 6 (Qg) — Naranja:  Barra térmica — parpadeo 500ms=HIGH, fijo=CRITICAL (overtemp).
+ * Bit 7 (Qh) — Rojo 2:   Causa de CRITICAL — parpadeo 500ms=sobretemperatura, fijo=falla de sensor NTC.
  *
- * Mapeo de bits (bit 0 = LSB = primero en salir = Qa, bit 7 = MSB = Qh):
- *   Bit 0 (Qa) — Blanco:   Heartbeat del kernel, parpadeo constante 1000ms.
- *   Bit 1 (Qb) — Azul 1:   Salud de teclado+OLED. Fijo=OK, parpadeo 500ms=falla.
- *   Bit 2 (Qc) — Azul 2:   Salud del enlace ESP32. Fijo=OK, parpadeo 500ms=falla.
- *   Bit 3 (Qd) — Rojo 1:   SHUTDOWN (500ms) o Alarma Permanente (200ms). Ver abajo.
- *   Bit 4 (Qe) — Verde:    Barra térmica — parpadeo 500ms=COLD, fijo=LOW o superior.
- *   Bit 5 (Qf) — Amarillo: Barra térmica — fijo=MEDIO o superior. Sin parpadeo propio
- *                           (no hay más LEDs disponibles para darle un estado "activo"
- *                           distinguible del "ya superado", decisión explícita del usuario).
- *   Bit 6 (Qg) — Naranja:  Barra térmica — parpadeo 500ms=HIGH, fijo=CRITICAL (overtemp).
- *   Bit 7 (Qh) — Rojo 2:   Causa de CRITICAL — parpadeo 500ms=sobretemperatura
- *                           (con Qe/Qf/Qg congelados en fijo), fijo=falla de sensor NTC
- *                           (con Qe/Qf/Qg completamente apagados, ver discussion.md §4.3).
- *
- * Durante SHUTDOWN (SystemState.shutdown_requested == true): TODO se apaga
- * excepto Qd, que parpadea a 500ms hasta que termina la secuencia de apagado
- * ordenado de todos los hilos (ya no hay escritura a NVS que esperar, ver
- * checkpoint.md Sección 4). Esta condición tiene prioridad sobre cualquier
- * otra — incluso sobre Alarma Permanente, que solo aplica en operación normal.
+ * Durante SHUTDOWN, TODO se apaga excepto Qd, que parpadea a 500ms indicando el
+ * proceso de apagado. 
  */
 
 #include <zephyr/kernel.h>
@@ -53,13 +44,12 @@ LOG_MODULE_REGISTER(led_representation_manager, LOG_LEVEL_WRN);
 
 static bool sr_ready = false;
 
-/*
- * Devuelve true durante la primera mitad de cada período `blink_period_ms`,
- * generando un parpadeo simétrico 50/50. `tick` es un contador incremental
- * de ciclos de PERIOD_MS del propio hilo (no un timestamp absoluto), lo cual
- * es suficiente porque todos los patrones de este sistema son parpadeos
- * periódicos simples, no secuencias con fase relativa entre sí que dependan
- * de un origen de tiempo compartido.
+/**
+ * @brief Evalúa si un LED debe encenderse en el ciclo actual para generar un parpadeo simétrico 50/50.
+ *
+ * @param tick Contador iterativo de ciclos del hilo principal.
+ * @param blink_period_ms Período total en milisegundos del parpadeo (encendido + apagado).
+ * @return true en la primera mitad del período (LED ON), false en la segunda mitad (LED OFF).
  */
 static bool blink_phase(uint32_t tick, uint32_t blink_period_ms)
 {
@@ -70,9 +60,19 @@ static bool blink_phase(uint32_t tick, uint32_t blink_period_ms)
 	return (tick % ticks_per_period) < (ticks_per_period / 2);
 }
 
-/* Arma el byte completo a enviar al registro para un ciclo dado. Separado en
- * su propia función (en vez de vivir dentro del while(1)) para poder
- * probarlo mentalmente/leerlo de corrido sin el ruido del bucle del hilo. */
+/**
+ * @brief Construye el byte con el estado lógico de los 8 LEDs para el ciclo actual.
+ *
+ * Recopila la información de los diferentes estados del sistema y aplica la
+ * lógica requerida para encender, apagar o parpadear los bits correspondientes
+ * basándose en el tick de tiempo actual.
+ *
+ * @param tick Contador iterativo de tiempo.
+ * @param sys Puntero de solo lectura al estado del sistema general.
+ * @param ctrl Puntero de solo lectura al estado de control y refrigeración.
+ * @param tel Puntero de solo lectura al estado telemétrico y de errores.
+ * @return El byte (uint8_t) que debe ser enviado al registro de desplazamiento (Shift Register).
+ */
 static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 			   const ControlState *ctrl, const TelemetryState *tel)
 {
@@ -86,7 +86,7 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 		return frame;
 	}
 
-	/* Qa — heartbeat del kernel, siempre activo salvo en SHUTDOWN. */
+	/* Qa — heartbeat del kernel. */
 	if (blink_phase(tick, 1000)) {
 		frame |= BIT_QA;
 	}
@@ -111,9 +111,7 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 		frame |= BIT_QC;
 	}
 
-	/* Qd — Alarma Permanente únicamente (SHUTDOWN ya se resolvió arriba).
-	 * Parpadea indefinidamente a 200ms mientras system_enabled == false;
-	 * no hay forma de apagarlo por software (ver discussion.md §4.5). */
+	/* Qd — Alarma Permanente. Parpadea indefinidamente a 200ms mientras system_enabled == false */
 	if (!sys->system_enabled) {
 		if (blink_phase(tick, 200)) {
 			frame |= BIT_QD;
@@ -123,8 +121,6 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 	/* Qe-Qh — barra térmica progresiva. */
 	if (ctrl->current_threshold_code == THRESHOLD_CRITICAL &&
 	    ctrl->critical_cause == CRITICAL_CAUSE_SENSOR_FAULT) {
-		/* Falla de sensor: la barra entera se apaga (ninguna lectura es
-		 * confiable), Qh queda fijo como única señal de esta causa. */
 		frame |= BIT_QH;
 	} else {
 		switch (ctrl->current_threshold_code) {
@@ -149,12 +145,12 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 			if (ctrl->keep_alive_revoked) {
 				/* ESTADO ESCALADO (OVERTMP, >20s): Efecto baliza entre barra térmica y Qh */
 				if (blink_phase(tick, 500)) {
-					frame |= BIT_QE | BIT_QF | BIT_QG; /* Barra encendida, Qh apagado */
+					frame |= BIT_QE | BIT_QF | BIT_QG; 
 				} else {
-					frame |= BIT_QH; /* Barra apagada, Qh encendido */
+					frame |= BIT_QH; 
 				}
 			} else {
-				/* ESTADO INICIAL (CRITIC, <20s): Barra fija, Qh parpadeando como advertencia */
+				/* ESTADO INICIAL (CRITIC, <20s): Barra fija, Qh parpadeando */
 				frame |= BIT_QE | BIT_QF | BIT_QG;
 				if (blink_phase(tick, 500)) {
 					frame |= BIT_QH;
@@ -167,6 +163,17 @@ static uint8_t build_frame(uint32_t tick, const SystemState *sys,
 	return frame;
 }
 
+/**
+ * @brief Hilo que gestiona la escritura física hacia el registro de LEDs.
+ *
+ * Se ejecuta periódicamente y transfiere los bytes de datos formados por
+ * 'build_frame()' al hardware en base al estado del sistema para representar
+ * alarmas, métricas y salud.
+ *
+ * @param p1 Parámetro no usado (requerido por Zephyr).
+ * @param p2 Parámetro no usado.
+ * @param p3 Parámetro no usado.
+ */
 static void led_representation_manager_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);

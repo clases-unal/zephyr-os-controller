@@ -1,25 +1,22 @@
-/*
- * heater_simulation_task.c — Hilo que simula una fuente de calor externa.
+/**
+ * @file heater_simulation_task.c
+ * @brief Hilo que simula y controla una fuente de calor externa (keep-alive).
  *
+ * @details
  * Qué hace:
- * - Activa y desactiva un pin de GPIO para simular una
- * resistencia de calentamiento.
+ * - Activa y desactiva un pin de GPIO para simular una resistencia de calentamiento.
  * - Solo emite calor cuando system_enabled está activo Y la autorización no fue
- * revocada externamente (ver heater_simulation_set_authorized()).
+ * revocada externamente.
  *
  * Cómo lo hace:
  * - Mantiene el pin activo de forma FIJA mientras tenga permiso.
  * - El hilo consulta SystemState para verificar si el sistema está habilitado.
  * - Consulta también una bandera interna "authorized" que otro módulo
- * (cooling_manager, ante CRITICAL por sobretemperatura sostenida) puede
- * bajar para forzar el corte del keep-alive sin tener acceso directo al GPIO.
- * - Si cualquiera de las dos condiciones falla, mantiene el GPIO en estado inactivo.
+ * puede bajar para forzar el corte del keep-alive.
  *
  * Qué recibe / qué entrega:
- * - Recibe el estado de habilitación del sistema desde SystemState y la
- * autorización externa desde heater_simulation_set_authorized().
- * - Entrega una señal de calor simulada al entorno físico (GPIO) y, vía la
- * temperatura del NTC, afecta al comportamiento del ventilador.
+ * - Recibe el estado de habilitación del sistema y la autorización externa.
+ * - Entrega una señal de calor simulada al entorno físico vía GPIO.
  */
 
 #include <zephyr/kernel.h>
@@ -37,11 +34,14 @@ LOG_MODULE_REGISTER(heater_simulation_task, LOG_LEVEL_INF);
 static const struct gpio_dt_spec heater =
 	GPIO_DT_SPEC_GET(DT_NODELABEL(heater_pin), gpios);
 
-/* Volátil: se escribe desde el hilo de cooling_manager y se lee desde este
- * hilo. No necesita mutex propio porque es un bool de una sola escritura por
- * evento (revocar/restaurar), no una estructura compuesta. */
+/* Volátil: se escribe desde el hilo de cooling_manager y se lee desde este hilo. */
 static volatile bool authorized = true;
 
+/**
+ * @brief Modifica la bandera de autorización del keep-alive térmico.
+ *
+ * @param new_authorized Nuevo estado de autorización (true para conceder, false para revocar).
+ */
 void heater_simulation_set_authorized(bool new_authorized)
 {
 	if (new_authorized != authorized) {
@@ -51,6 +51,9 @@ void heater_simulation_set_authorized(bool new_authorized)
 	authorized = new_authorized;
 }
 
+/**
+ * @brief Inicializa el puerto GPIO asociado al "heater" configurándolo como salida inactiva por defecto.
+ */
 void heater_simulation_task_init(void)
 {
 	if (!gpio_is_ready_dt(&heater)) {
@@ -60,6 +63,16 @@ void heater_simulation_task_init(void)
 	gpio_pin_configure_dt(&heater, GPIO_OUTPUT_INACTIVE);
 }
 
+/**
+ * @brief Hilo principal de la simulación del actuador de calor.
+ *
+ * Revisa el estado general y los permisos de autorización cíclicamente
+ * fijando el nivel del GPIO acorde.
+ *
+ * @param p1 Parámetro no usado (requerido por Zephyr).
+ * @param p2 Parámetro no usado.
+ * @param p3 Parámetro no usado.
+ */
 static void heater_simulation_task_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -83,8 +96,7 @@ static void heater_simulation_task_thread(void *p1, void *p2, void *p3)
 			gpio_pin_set_dt(&heater, 0);
 		}
 		
-		/* Espera corta para liberar la CPU, ya no controla un pulso
-		 * sino la frecuencia de actualización del pin */
+		/* Espera corta para liberar la CPU */
 		k_sleep(K_MSEC(100)); 
 	}
 }

@@ -1,10 +1,10 @@
+/**
+ * @file config_state.c
+ * @brief Implementación de ConfigState protegida por mutex.
+ */
+
 #include "config_state.h"
 
-/* TODO: confirmar valores por defecto reales contra el comportamiento esperado
- * de la maqueta física. Estos son placeholders razonables.
- * threshold_critical = 70.0f es una propuesta (10°C por encima de HIGH,
- * siguiendo el mismo criterio de "margen amplio pero observable" que el resto
- * de valores por defecto) — pendiente de confirmación final del usuario. */
 #define DEFAULT_THRESHOLD_LOW      30.0f
 #define DEFAULT_THRESHOLD_MEDIUM   45.0f
 #define DEFAULT_THRESHOLD_HIGH     60.0f

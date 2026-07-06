@@ -1,6 +1,6 @@
-/*
- * temperature_manager.c — Hilo responsable de leer la temperatura del NTC y
- * publicar una medida usable en el estado compartido del sistema.
+/**
+ * @file temperature_manager.c
+ * @brief Hilo responsable de leer la temperatura del NTC y publicarla.
  *
  * Qué hace:
  * - Inicializa el ADC/NTC al arrancar.
@@ -9,17 +9,14 @@
  * - Publica la lectura en ControlState.current_temperature.
  *
  * Cómo lo hace:
- * - Usa ntc_sensor_init() y ntc_sensor_read_celsius() para interactuar con el
- *   hardware del sensor.
- * - Aplica un promedio móvil simple sobre un buffer pequeño para suavizar la
- *   lectura.
- * - Cuando el sensor falla repetidamente, marca un error en TelemetryState para
- *   que otros hilos reaccionen (por ejemplo, cooling_manager).
+ * - Usa ntc_sensor_init() y ntc_sensor_read_celsius().
+ * - Aplica un promedio móvil simple sobre un buffer pequeño para suavizar la lectura.
+ * - Cuando el sensor falla repetidamente, marca un error en TelemetryState.
  *
  * Qué recibe / qué entrega:
  * - Recibe información de hardware a través del ADC y del driver del NTC.
  * - Entrega una temperatura filtrada y válida en ControlState.
- * - También entrega señales de error a TelemetryState.
+ * - Entrega señales de error a TelemetryState.
  */
 
 #include <zephyr/kernel.h>
@@ -33,7 +30,7 @@
 LOG_MODULE_REGISTER(temperature_manager, LOG_LEVEL_INF);
 
 #define STACK_SIZE 1024
-#define THREAD_PRIORITY 2       /* Alta prioridad — ver docs/02-firmware-architecture.md */
+#define THREAD_PRIORITY 2       /* Alta prioridad */
 
 #define PERIOD_MS            500
 #define FILTER_WINDOW        5
@@ -45,6 +42,13 @@ static uint8_t filter_index;
 static uint8_t filter_filled_count;
 static bool ntc_ready = false;
 
+/**
+ * @brief Reinicia a cero los valores y el estado del buffer de filtro móvil.
+ *
+ * Esta función es útil para limpiar el historial de lecturas, especialmente
+ * tras una falla del sensor o durante la inicialización, evitando promediar
+ * con datos antiguos e incorrectos.
+ */
 static void filter_reset(void)
 {
 	for (int i = 0; i < FILTER_WINDOW; i++) {
@@ -54,6 +58,16 @@ static void filter_reset(void)
 	filter_filled_count = 0;
 }
 
+/**
+ * @brief Inserta una nueva lectura y calcula el promedio móvil.
+ *
+ * Aplica un suavizado a las lecturas del sensor utilizando una ventana deslizante.
+ * Retorna el promedio exacto de los datos almacenados, ajustando el cálculo
+ * cuando la ventana aún no está completamente llena (en los primeros ciclos).
+ *
+ * @param new_sample Nueva medición de temperatura cruda del sensor en °C.
+ * @return La temperatura promediada actual en °C.
+ */
 static float apply_moving_average(float new_sample)
 {
 	filter_buffer[filter_index] = new_sample;
@@ -68,11 +82,14 @@ static float apply_moving_average(float new_sample)
 	return sum / (float)filter_filled_count;
 }
 
-/*
- * Intenta inicializar el sensor. Llamado al boot y también cada INIT_RETRY_MS
- * si la inicialización falló — esto permite que el sistema se recupere si el ADC
- * no estaba listo en el primer intento (por ej. orden de inicialización del kernel).
- * Retorna true si el ADC quedó listo para leer.
+/**
+ * @brief Intenta inicializar el hardware del sensor NTC.
+ *
+ * Llamado al boot y periódicamente cada INIT_RETRY_MS si la inicialización falló.
+ * Permite que el sistema se recupere si el ADC no estaba listo en el primer
+ * intento (por ej. por orden de inicialización del kernel).
+ *
+ * @return true si el ADC quedó listo para leer, false de lo contrario.
  */
 static bool try_init_ntc(void)
 {
@@ -86,12 +103,30 @@ static bool try_init_ntc(void)
 	return ok;
 }
 
+/**
+ * @brief Inicializa las variables internas y el hardware del sensor NTC.
+ */
 void temperature_manager_init(void)
 {
 	filter_reset();
 	ntc_ready = try_init_ntc();
 }
 
+/**
+ * @brief Hilo principal de gestión de la lectura de temperatura.
+ *
+ * Tareas principales por ciclo:
+ * 1. Verifica y reintenta la inicialización del NTC si este falló.
+ * 2. Solicita la temperatura del hardware.
+ * 3. Si la lectura es exitosa, reinicia el contador de errores, aplica el promedio
+ * móvil y publica el dato en el estado global.
+ * 4. Si la lectura falla, incrementa un contador y publica un error a la telemetría
+ * cuando sobrepasa el límite de tolerancia (MAX_CONSECUTIVE_FAILURES).
+ *
+ * @param p1 Parámetro no usado (requerido por la firma de hilos de Zephyr).
+ * @param p2 Parámetro no usado.
+ * @param p3 Parámetro no usado.
+ */
 static void temperature_manager_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);

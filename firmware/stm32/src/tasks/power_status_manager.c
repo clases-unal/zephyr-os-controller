@@ -1,41 +1,18 @@
-/*
- * power_status_manager.c — Pulsador físico (ISR + debounce), gestión de SHUTDOWN
+/**
+ * @file power_status_manager.c
+ * @brief Pulsador físico (ISR + debounce) y gestión de SHUTDOWN.
  *
  * Pin: PC13 (botón azul de usuario B1 de la Nucleo-L476RG).
- * Si tu diseño usa otro pin, cambia la declaración en el overlay y el
- * alias "sw0" o el nodo gpio_keys en el overlay.
  *
  * Comportamiento:
- *  - Detecta flanco de bajada (botón presionado) vía ISR de GPIO.
- *  - Aplica debounce por software: ignora flancos adicionales durante
- *    DEBOUNCE_MS tras el primero.
- *  - Pulsación corta (<= 500ms): toggle system_enabled.
- *  - Pulsación media (1000-2000ms): solicita modo configuración (OLED/teclado).
- *  - Pulsación larga (>= 5000ms): solicita SHUTDOWN ordenado y apaga.
- *  - Cualquier otra duración: se ignora (zonas muertas entre umbrales).
- *
- * Comunicación con el resto del sistema: solo escribe SystemState (y, para
- * el modo configuración, llama a la función pública de ui_keypad_task).
- * Otros módulos leen SystemState para reaccionar al shutdown.
- *
- * BUG DE ARRANQUE CORREGIDO EN ESTA SESIÓN — "la OLED abre en modo edición
- * sin que nadie toque el teclado ni el botón":
- * PC13 en el STM32L4 vive en el dominio de respaldo (compartido con la
- * funcionalidad de tamper/wakeup del RTC), que se estabiliza más lento que
- * el resto de los GPIO normales tras la energización — es un comportamiento
- * documentado del fabricante, no un defecto de esta placa en particular.
- * Durante ese breve período la línea puede leerse como "presionada" (activa)
- * sin que haya dedo alguno sobre el botón, típicamente por un lapso de hasta
- * uno o dos segundos. Como el sistema aquí ya distingue rangos de duración,
- * ese pulso fantasma caía justo dentro de la ventana de 1000-2000ms —
- * exactamente la que dispara el modo configuración — y por eso el síntoma
- * era tan específico y repetible.
- * La corrección NO cambia el pin ni su configuración eléctrica (sigue siendo
- * PC13, pull-up interno, EDGE_TO_ACTIVE): simplemente el hilo ignora
- * cualquier pulsación detectada durante los primeros BOOT_SETTLE_MS después
- * de que el pulsador queda listo, tiempo más que suficiente para que la
- * línea se estabilice y muy por debajo de lo que tardaría una persona en
- * presionar el botón a propósito recién arrancado el sistema.
+ * - Detecta flanco de bajada (botón presionado) vía ISR de GPIO.
+ * - Aplica debounce por software.
+ * - Clasifica pulsaciones en:
+ * - Corta (<= 500ms): Alterna system_enabled.
+ * - Media (1000-2000ms): Solicita modo configuración.
+ * - Larga (>= 5000ms): Solicita SHUTDOWN ordenado.
+ * - Implementa un periodo de gracia en el arranque (BOOT_SETTLE_MS) para ignorar
+ * falsas lecturas del dominio de respaldo del STM32L4.
  */
 
 #include <zephyr/kernel.h>
@@ -53,7 +30,7 @@ LOG_MODULE_REGISTER(power_status_manager, LOG_LEVEL_INF);
 
 /* ── Configuración del hilo y temporización ──────────────────────────────── */
 #define STACK_SIZE      1024
-#define THREAD_PRIORITY 2       /* Alta prioridad — ver docs/02-firmware-architecture.md */
+#define THREAD_PRIORITY 2       /* Alta prioridad */
 
 #define DEBOUNCE_MS       50
 #define SHORT_PRESS_MAX_MS  500   /* <= esto: toggle system_enabled */
@@ -62,11 +39,8 @@ LOG_MODULE_REGISTER(power_status_manager, LOG_LEVEL_INF);
 #define LONG_PRESS_MS     5000    /* >= esto: shutdown ordenado */
 
 /* Ventana de gracia tras el arranque durante la cual se ignora cualquier
- * pulsación detectada (ver nota de cabecera sobre el comportamiento de PC13
- * en el dominio de respaldo del STM32L4). 2s da margen amplio frente al
- * peor caso de asentamiento de la línea sin ser perceptible para el usuario
- * real, que no va a presionar el botón en el primer instante tras energizar
- * la placa. */
+ * pulsación detectada. 2s da margen amplio frente al peor caso de asentamiento
+ * de la línea sin ser perceptible para el usuario real. */
 #define BOOT_SETTLE_MS    2000
 
 /* ── Estado del módulo (file-scope) ──────────────────────────────────────── */
@@ -76,16 +50,22 @@ static struct gpio_callback button_cb;
 /* Semáforo que la ISR señala cuando detecta un flanco válido */
 static K_SEM_DEFINE(button_sem, 0, 1);
 
-/* Timestamp del flanco de bajada. Guardado por la ISR pero actualmente sin
- * lector (la medición real de duración se hace por polling en el hilo, ver
- * el bucle held_time más abajo) — queda como uno de los pocos símbolos
- * "definidos pero no usados" del proyecto; se deja intacto en vez de
- * eliminarlo porque no afecta el comportamiento y podría reutilizarse si
- * más adelante se prefiere medir la duración por timestamp en vez de por
- * polling. */
+/* Timestamp del flanco de bajada (actualmente sin uso activo por polling en hilo). */
 static int64_t press_timestamp_ms;
 
-/* ── ISR ──────────────────────────────────────────────────────────────────── */
+/* ── Funciones ───────────────────────────────────────────────────────────── */
+
+/**
+ * @brief Rutina de Servicio de Interrupción (ISR) para el botón de usuario.
+ *
+ * Registra el timestamp inicial de la pulsación y libera un semáforo para
+ * notificar al hilo principal (power_status_manager_thread) que evalúe la
+ * duración de la pulsación. Evita realizar procesamiento pesado.
+ *
+ * @param dev Puntero al dispositivo que generó la interrupción.
+ * @param cb Puntero a los datos del callback registrados.
+ * @param pins Máscara de bits de los pines que dispararon la interrupción.
+ */
 static void button_isr(const struct device *dev, struct gpio_callback *cb,
 		       uint32_t pins)
 {
@@ -98,7 +78,11 @@ static void button_isr(const struct device *dev, struct gpio_callback *cb,
 	k_sem_give(&button_sem);
 }
 
-/* ── Inicialización ───────────────────────────────────────────────────────── */
+/**
+ * @brief Inicializa el gestor de estados de energía y el pulsador físico.
+ *
+ * @return true si la configuración inicial del GPIO y su interrupción fue exitosa, false en caso contrario.
+ */
 bool power_status_manager_init(void)
 {
 	if (!gpio_is_ready_dt(&user_button)) {
@@ -125,7 +109,18 @@ bool power_status_manager_init(void)
 	return true;
 }
 
-/* ── Hilo principal ───────────────────────────────────────────────────────── */
+/**
+ * @brief Hilo principal que procesa las pulsaciones del botón.
+ *
+ * Espera por la señal del ISR del botón, aplica software debounce e ignora pulsaciones
+ * falsas ocurridas en la ventana de arranque inicial. Cuando valida una pulsación,
+ * mide su duración sondeando (polling) el pin en intervalos.
+ * En función de la duración (Corta, Media o Larga), dispara acciones de sistema.
+ *
+ * @param p1 Parámetro no usado (requerido por la firma de hilos de Zephyr).
+ * @param p2 Parámetro no usado.
+ * @param p3 Parámetro no usado.
+ */
 static void power_status_manager_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -140,9 +135,7 @@ static void power_status_manager_thread(void *p1, void *p2, void *p3)
 		return;
 	}
 
-	/* Marca de tiempo de referencia para la ventana de gracia de arranque
-	 * (ver nota de cabecera). Se toma justo después de que el pulsador
-	 * queda configurado y listo para generar interrupciones. */
+	/* Marca de tiempo de referencia para la ventana de gracia de arranque */
 	int64_t boot_ready_ms = k_uptime_get();
 
 	while (1) {

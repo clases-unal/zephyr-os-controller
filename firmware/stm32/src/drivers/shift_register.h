@@ -1,11 +1,12 @@
-/*
- * shift_register.h — Driver genérico para un SN74HC595N (8 salidas) vía SPI.
+/**
+ * @file shift_register.h
+ * @brief Driver genérico para un SN74HC595N (8 salidas) operado vía SPI.
  *
- * Este driver no sabe nada sobre LEDs, colores ni significados — solo sabe
- * mandar un byte por SPI y pulsar el LATCH para que el registro lo saque a
- * sus 8 pines Q0-Q7 en paralelo. La interpretación de qué bit significa qué
- * LED vive en tasks/led_representation_manager.c, no aquí — así el driver es
- * reutilizable si el proyecto necesita otro registro en el futuro.
+ * @details
+ * Este driver delega el significado visual de los LEDs en capas superiores
+ * (ej. led_representation_manager.c). Su única responsabilidad es desplazar
+ * un byte mediante el periférico de hardware SPI y activar el flanco del
+ * LATCH para hacer el reflejo visible de un solo golpe.
  */
 
 #ifndef SHIFT_REGISTER_H
@@ -14,15 +15,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Inicializa el bus SPI y el pin de LATCH. Llamar una vez antes de cualquier
- * shift_register_write(). Retorna false si el hardware no está listo. */
+/**
+ * @brief Inicializa el bus SPI y el pin GPIO de LATCH del Shift Register.
+ *
+ * Se debe ejecutar una vez de manera preliminar a la escritura de bits.
+ *
+ * @return true si los periféricos (SPI, GPIO) indicados por el DeviceTree
+ * se prepararon con éxito. false ante un error de validación del hardware.
+ */
 bool shift_register_init(void);
 
-/*
- * Envía un byte completo al registro y pulsa LATCH para que quede reflejado
- * en las salidas Q0-Q7. El bit 0 (LSB) de `value` corresponde a Q0 y el bit 7
- * (MSB) a Q7 — este es el orden que usa led_representation_manager.c para
- * mapear Qa..Qh a bits 0..7 respectivamente.
+/**
+ * @brief Transmite un bloque de 8 bits (un byte) y efectúa el pulso de enganche (LATCH).
+ *
+ * El bit 0 (LSB) del parámetro `value` se reflejará físicamente en el pin Q0.
+ * El bit 7 (MSB) de `value` corresponderá a Q7 de forma secuencial.
+ *
+ * @param value Byte (uint8_t) con la combinación de estados lógicos a representar en paralelo.
  */
 void shift_register_write(uint8_t value);
 

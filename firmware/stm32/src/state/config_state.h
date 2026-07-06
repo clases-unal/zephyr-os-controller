@@ -1,15 +1,12 @@
-/*
- * config_state.h — Parámetros editables por el usuario vía HMI (ConfigState)
- * Protegido por config_mutex.
+/**
+ * @file config_state.h
+ * @brief Parámetros editables por el usuario vía HMI (ConfigState).
  *
- * MEJORA FUTURA — persistencia en NVS (no implementada, decisión deliberada):
- * Los 4 umbrales de esta estructura son el caso de uso más obvio para NVS —
- * hoy cada reinicio los resetea a los defaults de config_state.c, perdiendo
- * cualquier ajuste que el usuario haya hecho por teclado. Ver telemetry_state.c
- * para la explicación completa de por qué se descartó NVS por ahora y qué
- * haría falta para retomarlo (banderas de Kconfig, costo estimado, campos
- * exactos a persistir). Esta struct entera (los 4 floats) es uno de esos
- * campos candidatos.
+ * @details
+ * Protegido por config_mutex. Contiene los umbrales de temperatura 
+ * utilizados por cooling_manager para la toma de decisiones.
+ * * MEJORA FUTURA: Los 4 umbrales de esta estructura son el caso de uso más 
+ * obvio para persistencia en memoria no volátil (NVS).
  */
 
 #ifndef CONFIG_STATE_H
@@ -17,21 +14,34 @@
 
 #include <zephyr/kernel.h>
 
+/**
+ * @brief Estructura que define los umbrales de activación térmica.
+ */
 typedef struct {
-	float threshold_low;
-	float threshold_medium;
-	float threshold_high;
-	/* Umbral de CRITICAL por sobretemperatura. Se agregó junto con el
-	 * rediseño de LEDs de un solo registro de desplazamiento — antes CRITICAL
-	 * solo existía como concepto documentado, sin un valor de temperatura
-	 * real que lo disparara. Editable por teclado igual que los otros tres,
-	 * con el mismo margen de histéresis fijo de 2°C (discussion.md §4.2). */
-	float threshold_critical;
-	/* TODO: modo de operación — definir enum cuando se cierre el diseño de UI/teclado */
+	float threshold_low;      /**< Umbral térmico para nivel LOW. */
+	float threshold_medium;   /**< Umbral térmico para nivel MEDIUM. */
+	float threshold_high;     /**< Umbral térmico para nivel HIGH. */
+	float threshold_critical; /**< Umbral de sobretemperatura para CRITICAL. */
 } ConfigState;
 
+/**
+ * @brief Inicializa los umbrales por defecto y el mutex asociado.
+ */
 void config_state_init(void);
+
+/**
+ * @brief Obtiene una copia segura de los parámetros de configuración.
+ * * @param out Puntero a la estructura donde se copiará el estado actual.
+ */
 void config_state_get(ConfigState *out);
+
+/**
+ * @brief Modifica todos los umbrales térmicos garantizando la exclusión mutua.
+ * * @param low Nuevo valor para el umbral LOW.
+ * @param medium Nuevo valor para el umbral MEDIUM.
+ * @param high Nuevo valor para el umbral HIGH.
+ * @param critical Nuevo valor para el umbral CRITICAL.
+ */
 void config_state_set_thresholds(float low, float medium, float high, float critical);
 
 #endif /* CONFIG_STATE_H */

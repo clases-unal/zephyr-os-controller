@@ -1,16 +1,10 @@
-/*
- * uart_packet.h — Protocolo UART STM32 <-> ESP32
+/**
+ * @file uart_packet.h
+ * @brief Protocolo UART STM32 <-> ESP32 simétrico (Construcción y Parseo).
  *
- * Formato de trama (igual en ambos sentidos, el protocolo es simétrico):
- *   [SOF 1B][TYPE 1B][SEQ 1B][LEN 1B][PAYLOAD nB][CRC16 2B]
- *   SOF = 0xAA
- *   CRC16-CCITT sobre TYPE+SEQ+LEN+PAYLOAD (no incluye SOF ni el CRC mismo)
- *
- * Este archivo ofrece dos mitades independientes:
- *   - Construcción de tramas para enviar (uart_packet_build) — ya existía.
- *   - Parseo de tramas recibidas byte a byte (uart_packet_parser_*) — nuevo,
- *     agregado para que esp32_comm_manager pueda leer heartbeats/paquetes que
- *     el ESP32 envíe de vuelta, en vez de solo transmitir a ciegas.
+ * @details
+ * Formato de trama: [SOF 1B][TYPE 1B][SEQ 1B][LEN 1B][PAYLOAD nB][CRC16 2B]
+ * SOF = 0xAA. CRC16-CCITT calculado sobre TYPE+SEQ+LEN+PAYLOAD.
  */
 
 #ifndef UART_PACKET_H
@@ -20,65 +14,51 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#define UART_PACKET_SOF       0xAAu
+#define UART_PACKET_SOF         0xAAu
 #define UART_PACKET_MAX_PAYLOAD 64u
 
+/**
+ * @brief Tipos de paquetes serializables en la red.
+ */
 typedef enum {
-	PACKET_TYPE_TELEMETRY  = 0x01,  /* temperatura, duty, umbral — cada 2s */
-	PACKET_TYPE_CONFIG     = 0x02,  /* umbrales configurados por HMI */
-	PACKET_TYPE_DIAGNOSTIC = 0x03,  /* boot count, error flags — solo en boot */
-	PACKET_TYPE_HEARTBEAT  = 0x04,  /* "sigo vivo" — sin payload, cada 5s en ambos sentidos */
+	PACKET_TYPE_TELEMETRY  = 0x01,  /**< Temperatura, duty, umbral. */
+	PACKET_TYPE_CONFIG     = 0x02,  /**< Umbrales establecidos por HMI. */
+	PACKET_TYPE_DIAGNOSTIC = 0x03,  /**< Diagnósticos y contador de fallos. */
+	PACKET_TYPE_HEARTBEAT  = 0x04   /**< Trama nula para control de vida. */
 } packet_type_t;
 
-/* Payload de telemetría dinámica (tipo 0x01) */
+/**
+ * @brief Estructura del payload de telemetría (PACKET_TYPE_TELEMETRY).
+ */
 typedef struct __attribute__((packed)) {
-	int16_t  temperature_cdeg;  /* temperatura × 100, ej. 2530 = 25.30°C */
-	uint8_t  fan_duty_pct;
-	uint8_t  threshold_code;
-	uint8_t  error_flags;
+	int16_t temperature_cdeg; /**< Temperatura actual multiplicada por 100. */
+	uint8_t fan_duty_pct;     /**< Ciclo de trabajo del ventilador (0-100). */
+	uint8_t threshold_code;   /**< Nivel térmico activo. */
+	uint8_t error_flags;      /**< Banderas de error activas (bitmask). */
 } payload_telemetry_t;
 
-/* Payload de configuración (tipo 0x02) */
+/**
+ * @brief Estructura del payload de configuración (PACKET_TYPE_CONFIG).
+ */
 typedef struct __attribute__((packed)) {
-	int16_t  threshold_low_cdeg;
-	int16_t  threshold_medium_cdeg;
-	int16_t  threshold_high_cdeg;
-	int16_t  threshold_critical_cdeg;
+	int16_t threshold_low_cdeg;      /**< Umbral LOW multiplicado por 100. */
+	int16_t threshold_medium_cdeg;   /**< Umbral MEDIUM multiplicado por 100. */
+	int16_t threshold_high_cdeg;     /**< Umbral HIGH multiplicado por 100. */
+	int16_t threshold_critical_cdeg; /**< Umbral CRITICAL multiplicado por 100. */
 } payload_config_t;
 
-/* Payload de diagnóstico (tipo 0x03) */
+/**
+ * @brief Estructura del payload de diagnóstico (PACKET_TYPE_DIAGNOSTIC).
+ */
 typedef struct __attribute__((packed)) {
-	uint32_t boot_count;
-	uint32_t error_count_ntc;
-	uint32_t error_count_oled;
-	uint32_t error_count_esp32;
+	uint32_t boot_count;        /**< Conteo histórico de arranques del sistema. */
+	uint32_t error_count_ntc;   /**< Conteo de fallas del sensor NTC. */
+	uint32_t error_count_oled;  /**< Conteo de fallas de la pantalla OLED. */
+	uint32_t error_count_esp32; /**< Conteo de desconexiones del ESP32. */
 } payload_diagnostic_t;
 
-/* PACKET_TYPE_HEARTBEAT no tiene payload (payload_len = 0) — su único
- * propósito es existir y llegar con CRC válido, no transporta datos. */
-
-/* Calcula CRC16-CCITT (polinomio 0x1021, init 0xFFFF) */
-uint16_t uart_packet_crc16(const uint8_t *data, size_t len);
-
-/*
- * Construye una trama completa en buf[].
- * Retorna la longitud total de la trama, o 0 si payload_len > MAX_PAYLOAD.
- */
-size_t uart_packet_build(uint8_t *buf, size_t buf_size,
-			 packet_type_t type, uint8_t seq,
-			 const void *payload, uint8_t payload_len);
-
-/* ── Recepción byte a byte ───────────────────────────────────────────────
- * Diseñado para alimentarse desde uart_poll_in() en un bucle no bloqueante:
- * cada byte que llega se pasa a uart_packet_parser_feed(). La función
- * devuelve true únicamente cuando terminó de ensamblar una trama completa Y
- * el CRC verificó correcto — en ese momento *out_type/*out_seq/*out_payload/
- * *out_payload_len quedan poblados con la trama recibida. En cualquier otro
- * caso (trama incompleta, CRC inválido, byte de resincronización) devuelve
- * false y el parser se reinicia solo internamente, sin necesitar que quien
- * lo llama haga nada especial — así el llamador no tiene que preocuparse por
- * manejar tramas corruptas o desalineadas, solo por leer el resultado cuando
- * la función devuelve true.
+/**
+ * @brief Máquina de estados para la recepción de tramas UART asíncronas.
  */
 typedef struct {
 	enum {
@@ -98,10 +78,38 @@ typedef struct {
 	uint8_t crc_hi;
 } uart_rx_parser_t;
 
+/**
+ * @brief Inicializa la estructura del parser RX.
+ * @param parser Puntero al objeto parser a limpiar.
+ */
 void uart_packet_parser_init(uart_rx_parser_t *parser);
 
-bool uart_packet_parser_feed(uart_rx_parser_t *parser, uint8_t byte,
-			     packet_type_t *out_type, uint8_t *out_seq,
-			     const uint8_t **out_payload, uint8_t *out_payload_len);
+/**
+ * @brief Alimenta el parser con un byte crudo. Evalúa si la trama completó exitosamente.
+ * * @param parser Máquina de estados.
+ * @param byte_in Byte entrante del bus serial.
+ * @param out_type Parámetro de salida si finaliza bien (Tipo de paquete).
+ * @param out_seq Parámetro de salida (Secuencia).
+ * @param out_payload Parámetro de salida (Puntero al buffer del Payload).
+ * @param out_payload_len Parámetro de salida (Longitud de la carga).
+ * @return true si se ensambló una trama íntegra y el CRC16 coincide, false de lo contrario.
+ */
+bool uart_packet_parser_feed(uart_rx_parser_t *parser, uint8_t byte_in,
+                             packet_type_t *out_type, uint8_t *out_seq,
+                             const uint8_t **out_payload, uint8_t *out_payload_len);
+
+/**
+ * @brief Ensambla una trama completa para transmisión, calculándole el CRC.
+ * * @param buf Buffer de memoria de salida.
+ * @param buf_size Longitud máxima autorizada de escritura en buf.
+ * @param type Tipo de paquete de datos.
+ * @param seq ID secuencial de la transacción.
+ * @param payload Puntero al contenido de los datos crudos.
+ * @param payload_len Tamaño del payload a anexar.
+ * @return Tamaño final del paquete entero incluyendo cabecera y CRC (0 si hay error).
+ */
+size_t uart_packet_build(uint8_t *buf, size_t buf_size,
+                         packet_type_t type, uint8_t seq,
+                         const void *payload, uint8_t payload_len);
 
 #endif /* UART_PACKET_H */

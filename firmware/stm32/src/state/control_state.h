@@ -1,10 +1,10 @@
-/*
- * control_state.h — Estado de control térmico (ControlState)
- * Protegido por control_mutex. Ver docs/02-firmware-architecture.md Sección 2.
+/**
+ * @file control_state.h
+ * @brief Estado de control térmico activo (ControlState).
  *
- * Dominio: lo relacionado al lazo de control térmico en sí (temperatura medida,
- * salida PWM hacia el ventilador, umbral activo). NO incluye configuración editable
- * por el usuario (eso es ConfigState) ni banderas de diagnóstico (eso es TelemetryState).
+ * @details
+ * Protegido por control_mutex. Dominio: Todo lo relacionado al lazo de 
+ * control térmico en sí (temperatura medida, salida PWM, umbral activo).
  */
 
 #ifndef CONTROL_STATE_H
@@ -14,10 +14,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Códigos de umbral térmico. El orden importa: se usa para comparaciones >=.
- * THRESHOLD_CRITICAL se agregó junto con el 4to umbral configurable
- * (ConfigState.threshold_critical) — antes CRITICAL no existía como código
- * de umbral real, solo se mencionaba en la documentación sin implementación. */
+/**
+ * @brief Códigos de clasificación térmica (el orden importa para comparaciones >=).
+ */
 typedef enum {
 	THRESHOLD_COLD = 0,
 	THRESHOLD_LOW,
@@ -26,58 +25,67 @@ typedef enum {
 	THRESHOLD_CRITICAL,
 } threshold_code_t;
 
-/* Causa específica de un CRITICAL activo. Necesario porque el LED Qh y la
- * pantalla OLED deben mostrar mensajes distintos según la causa (ver
- * discussion.md §4.3), aunque threshold_code_t por sí solo no distingue entre
- * ambas — ambas producen THRESHOLD_CRITICAL. */
+/**
+ * @brief Identifica la causa por la cual el sistema entró en estado CRITICAL.
+ */
 typedef enum {
-	CRITICAL_CAUSE_NONE = 0,     /* No está en CRITICAL */
-	CRITICAL_CAUSE_OVERTEMP,     /* current_temperature >= threshold_critical */
-	CRITICAL_CAUSE_SENSOR_FAULT, /* Lectura ADC fuera de rango físico válido */
+	CRITICAL_CAUSE_NONE = 0,     /**< El sistema no está en estado crítico. */
+	CRITICAL_CAUSE_OVERTEMP,     /**< Superado el límite threshold_critical. */
+	CRITICAL_CAUSE_SENSOR_FAULT, /**< Falla técnica detectada en el sensor NTC. */
 } critical_cause_t;
 
+/**
+ * @brief Estado global de control y actuación térmica.
+ */
 typedef struct {
-	float current_temperature;         /* °C, ya filtrada (promedio móvil) */
-	uint8_t fan_pwm_duty_cycle;         /* 0-100 */
-	threshold_code_t current_threshold_code;
-	critical_cause_t critical_cause;    /* Válido solo si current_threshold_code == THRESHOLD_CRITICAL */
-
-	/* Milisegundos continuos transcurridos desde que se entró en CRITICAL por
-	 * causa OVERTEMP. Se usa para el temporizador de 20s que decide si se
-	 * corta la línea keep-alive (ver cooling_manager.c y checkpoint.md §3.3).
-	 * Se reinicia a 0 cada vez que se sale de CRITICAL-por-sobretemperatura. */
-	uint32_t time_in_critical_overtemp_ms;
-
-	/* true mientras el keep-alive fue revocado por el propio lazo de control
-	 * térmico (timeout de CRITICAL sostenido), para que otros módulos (LED,
-	 * OLED) puedan mostrarlo sin tener que re-derivar la condición ellos mismos. */
-	bool keep_alive_revoked;
+	float current_temperature;       /**< Temperatura filtrada actual en °C. */
+	uint8_t fan_pwm_duty_cycle;      /**< Porcentaje de ciclo de trabajo PWM (0-100). */
+	threshold_code_t current_threshold_code; /**< Nivel térmico activo. */
+	critical_cause_t critical_cause;         /**< Causa de la criticidad (si aplica). */
+	uint32_t time_in_critical_overtemp_ms;   /**< Tiempo sostenido en CRITICAL por temperatura. */
+	bool keep_alive_revoked;         /**< Estado de revocación de la planta de calor externa. */
 } ControlState;
 
-/*
- * Inicializa la estructura y su mutex. Debe llamarse una única vez desde main()
- * antes de crear cualquier hilo que la use.
+/**
+ * @brief Inicializa la estructura de estado de control y su mutex.
  */
 void control_state_init(void);
 
-/* Lectura segura: copia el estado actual en *out bajo el mutex. */
+/**
+ * @brief Obtiene una copia de solo lectura del estado de control actual.
+ * @param out Puntero donde se copiarán los datos.
+ */
 void control_state_get(ControlState *out);
 
-/* Escritura segura de temperatura (llamada típicamente desde temperature_manager). */
+/**
+ * @brief Actualiza el valor de temperatura del sistema de manera segura.
+ * @param temperature_celsius Nueva lectura filtrada en grados Celsius.
+ */
 void control_state_set_temperature(float temperature_celsius);
 
-/* Escritura segura de duty cycle (llamada típicamente desde cooling_manager). */
+/**
+ * @brief Actualiza la consigna del ciclo de trabajo del ventilador.
+ * @param duty_cycle Nuevo valor de trabajo (0-100%).
+ */
 void control_state_set_fan_duty(uint8_t duty_cycle);
 
-/* Escritura segura de umbral activo y causa de CRITICAL (causa se ignora si
- * code != THRESHOLD_CRITICAL, pero se recomienda pasar CRITICAL_CAUSE_NONE
- * explícitamente en ese caso para dejarlo claro en el sitio de llamada). */
+/**
+ * @brief Define el nivel térmico actual y si hay causa crítica activa.
+ * @param code Nuevo código de umbral.
+ * @param cause Causa de entrada a estado crítico (CRITICAL_CAUSE_NONE en situación normal).
+ */
 void control_state_set_threshold(threshold_code_t code, critical_cause_t cause);
 
-/* Actualiza el contador de tiempo sostenido en CRITICAL-por-sobretemperatura. */
+/**
+ * @brief Establece los milisegundos que el sistema lleva sostenido en sobretemperatura.
+ * @param ms Tiempo medido en milisegundos.
+ */
 void control_state_set_time_in_critical(uint32_t ms);
 
-/* Marca si el keep-alive fue revocado por el propio control térmico. */
+/**
+ * @brief Marca si la autorización externa del actuador de calor ha sido retirada.
+ * @param revoked true si la revocación está activa.
+ */
 void control_state_set_keep_alive_revoked(bool revoked);
 
 #endif /* CONTROL_STATE_H */

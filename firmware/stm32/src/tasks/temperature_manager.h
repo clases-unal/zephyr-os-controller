@@ -1,14 +1,21 @@
-/*
- * temperature_manager.h — Temperature Manager: ADC, Steinhart-Hart, filtrado
+/**
+ * @file temperature_manager.h
+ * @brief Gestor de Temperatura: ADC, Steinhart-Hart, filtrado.
  *
- * Cada módulo de tasks/ expone únicamente una función de inicialización (si la
- * necesita); el hilo en sí se registra de forma estática en el .c con
- * K_THREAD_DEFINE, por lo que normalmente no hay más API pública que exponer aquí.
+ * Módulo encargado de la inicialización y lectura del sensor de temperatura.
+ * Cada módulo de tasks/ expone únicamente una función de inicialización,
+ * mientras que el hilo se registra estáticamente en el archivo .c correspondiente.
  */
 
 #ifndef TEMPERATURE_MANAGER_H
 #define TEMPERATURE_MANAGER_H
 
+/**
+ * @brief Inicializa las variables internas y el hardware del sensor NTC.
+ *
+ * Configura los buffers de filtro y realiza el primer intento de vinculación
+ * con el ADC subyacente.
+ */
 void temperature_manager_init(void);
 
 #endif /* TEMPERATURE_MANAGER_H */
